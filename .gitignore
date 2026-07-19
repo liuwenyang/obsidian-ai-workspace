@@ -1,0 +1,20 @@
+# Device-local plugin state. This contains private conversations, executable
+# paths, permissions, active selections, and Provider runtime identifiers.
+data.json
+data.json.*
+
+# Local secrets and environment overrides.
+.env
+.env.*
+!.env.example
+credentials.json
+secrets.json
+
+# Dependencies, generated output, and machine noise.
+node_modules/
+coverage/
+dist/
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini

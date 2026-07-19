@@ -1,0 +1,13 @@
+{
+  "name": "obsidian-ai-workspace",
+  "version": "0.6.0",
+  "private": true,
+  "description": "A native Obsidian workspace for Codex, Claude Code, and ReClaude conversations.",
+  "scripts": {
+    "check": "node --check main.js && node --check codex-app-server-client.js && node --check conversation-utils.js && node --check attachment-utils.js && node --check conversation-sync-utils.js",
+    "test": "npm run check && node test/codex-chat-app-server-client.test.js && node test/codex-chat-conversation-domain.test.js && node test/codex-chat-image-attachments.test.js && node test/codex-chat-image-integration.test.js && node test/codex-chat-conversation-sync.test.js && node test/codex-chat-conversation-sync-integration.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
