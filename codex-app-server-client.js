@@ -82,18 +82,20 @@ function prepareSpawnInvocation(command, args = [], options = {}) {
   throw new Error(`无法安全启动 Windows 命令脚本：${resolvedCommand}`);
 }
 
-function buildCodexThreadStartParams(settings, vaultPath) {
+function buildCodexThreadStartParams(settings, vaultPath, modelOverride) {
   const params = {
     cwd: vaultPath,
     approvalPolicy: "on-request",
     sandbox: settings && settings.allowEdits ? "workspace-write" : "read-only",
   };
-  const model = settings && settings.models && settings.models.codex;
+  const model = typeof modelOverride === "string"
+    ? modelOverride
+    : settings && settings.models && settings.models.codex;
   if (model) params.model = model;
   return params;
 }
 
-function buildCodexTurnStartParams({ threadId, prompt, imagePaths, userMessageId, settings, vaultPath }) {
+function buildCodexTurnStartParams({ threadId, prompt, imagePaths, userMessageId, settings, model, vaultPath }) {
   const input = [{ type: "text", text: String(prompt || "") }];
   for (const imagePath of Array.isArray(imagePaths) ? imagePaths : []) {
     if (typeof imagePath === "string" && path.isAbsolute(imagePath)) {
@@ -111,8 +113,8 @@ function buildCodexTurnStartParams({ threadId, prompt, imagePaths, userMessageId
       ? { type: "workspaceWrite", writableRoots: [vaultPath], networkAccess: false }
       : { type: "readOnly" },
   };
-  const model = settings && settings.models && settings.models.codex;
-  if (model) params.model = model;
+  const selectedModel = typeof model === "string" ? model : settings && settings.models && settings.models.codex;
+  if (selectedModel) params.model = selectedModel;
   return params;
 }
 
@@ -256,6 +258,15 @@ function parseCodexAppServerNotification(method, paramsValue) {
         cachedInputTokens: Number(last.cachedInputTokens || 0),
         outputTokens: Number(last.outputTokens || 0),
       },
+    };
+  }
+  if (method === "model/rerouted" && threadId && turnId && typeof params.toModel === "string") {
+    return {
+      kind: "modelRerouted",
+      threadId,
+      turnId,
+      fromModel: typeof params.fromModel === "string" ? params.fromModel : "",
+      model: params.toModel,
     };
   }
   if (method === "error" || method === "warning") {
@@ -407,7 +418,7 @@ class CodexAppServerClient {
     this.clientInfo = {
       name: "obsidian_ai_workspace",
       title: "AI Workspace for Obsidian",
-      version: "0.6.0",
+      version: "0.7.0",
       ...(options.clientInfo || {}),
     };
     this.capabilities = options.capabilities && typeof options.capabilities === "object"

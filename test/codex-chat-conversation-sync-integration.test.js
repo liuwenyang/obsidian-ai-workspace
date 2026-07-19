@@ -176,15 +176,15 @@ plugin.app = {
       return {};
     },
   });
-  plugin.startCodexThread = async () => ({ id: "new-local-thread" });
+  plugin.startCodexThread = async () => ({ thread: { id: "new-local-thread" }, model: "gpt-synced" });
   plugin.updateConversationFromCodexThread = async (_conversationId, thread, branchKind) => {
     merged.providerThreadId = thread.id;
     merged.sessionId = thread.id;
     merged.branchKind = branchKind;
     return merged;
   };
-  const threadId = await plugin.ensureCodexConversationThread(merged, currentMessage.id);
-  assert.strictEqual(threadId, "new-local-thread");
+  const thread = await plugin.ensureCodexConversationThread(merged, currentMessage.id, "requested-model");
+  assert.deepStrictEqual(thread, { threadId: "new-local-thread", model: "gpt-synced" });
   const injection = requests.find((request) => request.method === "thread/inject_items");
   assert(injection, "synced history should be injected into a new local Codex thread");
   assert.deepStrictEqual(

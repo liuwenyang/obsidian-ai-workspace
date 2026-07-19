@@ -53,6 +53,19 @@ assert.deepStrictEqual(threadParams, {
   sandbox: "workspace-write",
   model: "gpt-test",
 });
+assert.deepStrictEqual(
+  buildCodexThreadStartParams(
+    { allowEdits: false, models: { codex: "stale-setting" } },
+    "C:/vault",
+    "",
+  ),
+  {
+    cwd: "C:/vault",
+    approvalPolicy: "on-request",
+    sandbox: "read-only",
+  },
+  "switching back to automatic must start a thread without the stale explicit model",
+);
 
 const turnParams = buildCodexTurnStartParams({
   threadId: "thread-1",
@@ -68,6 +81,17 @@ assert.deepStrictEqual(turnParams.input, [
   { type: "localImage", path: "C:/vault/image.png" },
 ]);
 assert.deepStrictEqual(turnParams.sandboxPolicy, { type: "readOnly" });
+
+const switchedTurnParams = buildCodexTurnStartParams({
+  threadId: "thread-1",
+  prompt: "继续",
+  imagePaths: [],
+  userMessageId: "message-2",
+  settings: { allowEdits: false, models: { codex: "stale-setting" } },
+  model: "gpt-turn-snapshot",
+  vaultPath: "C:/vault",
+});
+assert.strictEqual(switchedTurnParams.model, "gpt-turn-snapshot");
 
 assert.deepStrictEqual(
   buildInjectedHistoryItems([
@@ -114,6 +138,22 @@ assert.deepStrictEqual(
     turnId: "turn-1",
     itemId: "item-1",
     delta: "你好",
+  },
+);
+assert.deepStrictEqual(
+  parseCodexAppServerNotification("model/rerouted", {
+    threadId: "thread-1",
+    turnId: "turn-1",
+    fromModel: "gpt-requested",
+    toModel: "gpt-actual",
+    reason: "highRiskCyberActivity",
+  }),
+  {
+    kind: "modelRerouted",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    fromModel: "gpt-requested",
+    model: "gpt-actual",
   },
 );
 assert.deepStrictEqual(

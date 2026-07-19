@@ -300,18 +300,20 @@ class CodexAppServerError extends Error {
   }
 }
 
-function buildCodexThreadStartParams(settings, vaultPath) {
+function buildCodexThreadStartParams(settings, vaultPath, modelOverride) {
   const params = {
     cwd: vaultPath,
     approvalPolicy: "on-request",
     sandbox: settings && settings.allowEdits ? "workspace-write" : "read-only",
   };
-  const model = settings && settings.models && settings.models.codex;
+  const model = typeof modelOverride === "string"
+    ? modelOverride
+    : settings && settings.models && settings.models.codex;
   if (model) params.model = model;
   return params;
 }
 
-function buildCodexTurnStartParams({ threadId, prompt, imagePaths, userMessageId, settings, vaultPath }) {
+function buildCodexTurnStartParams({ threadId, prompt, imagePaths, userMessageId, settings, model, vaultPath }) {
   const input = [{ type: "text", text: String(prompt || "") }];
   for (const imagePath of Array.isArray(imagePaths) ? imagePaths : []) {
     if (typeof imagePath === "string" && path.isAbsolute(imagePath)) {
@@ -329,8 +331,8 @@ function buildCodexTurnStartParams({ threadId, prompt, imagePaths, userMessageId
       ? { type: "workspaceWrite", writableRoots: [vaultPath], networkAccess: false }
       : { type: "readOnly" },
   };
-  const model = settings && settings.models && settings.models.codex;
-  if (model) params.model = model;
+  const selectedModel = typeof model === "string" ? model : settings && settings.models && settings.models.codex;
+  if (selectedModel) params.model = selectedModel;
   return params;
 }
 
@@ -464,6 +466,15 @@ function parseCodexAppServerNotification(method, paramsValue) {
         cachedInputTokens: Number(last.cachedInputTokens || 0),
         outputTokens: Number(last.outputTokens || 0),
       },
+    };
+  }
+  if (method === "model/rerouted" && threadId && turnId && typeof params.toModel === "string") {
+    return {
+      kind: "modelRerouted",
+      threadId,
+      turnId,
+      fromModel: typeof params.fromModel === "string" ? params.fromModel : "",
+      model: params.toModel,
     };
   }
   if (method === "error" || method === "warning") {
@@ -600,7 +611,7 @@ class CodexAppServerClient {
     this.clientInfo = {
       name: "obsidian_ai_workspace",
       title: "AI Workspace for Obsidian",
-      version: "0.6.0",
+      version: "0.7.0",
       ...(options.clientInfo || {}),
     };
     this.capabilities = options.capabilities && typeof options.capabilities === "object"
@@ -946,6 +957,9 @@ function parseClaudeEvent(event, label) {
       .map((block) => block.text || "")
       .join("")
       .trim();
+    if (typeof event.message.model === "string" && event.message.model) {
+      actions.push({ kind: "model", value: event.message.model });
+    }
     if (text) actions.push({ kind: "assistant", text });
     const tool = blocks.find((block) => block && block.type === "tool_use");
     if (tool) actions.push({ kind: "status", text: `${label} 正在使用 ${tool.name || "工具"}…` });
@@ -970,7 +984,7 @@ function parseClaudeEvent(event, label) {
 function claudeArgs(settings, providerId, runOptions = {}) {
   const args = ["-p", "--output-format", "stream-json", "--verbose"];
   args.push("--permission-mode", settings.allowEdits ? "acceptEdits" : "plan");
-  const model = settings.models[providerId];
+  const model = typeof runOptions.model === "string" ? runOptions.model : settings.models[providerId];
   if (model) args.push("--model", model);
   const sessionId = Object.prototype.hasOwnProperty.call(runOptions, "sessionId")
     ? runOptions.sessionId
@@ -996,11 +1010,14 @@ function createProviderRegistry(settings, vaultPath) {
       shortLabel: "Codex",
       icon: "terminal-square",
       accent: "codex",
+      supportsThreadModelSwitch: true,
+      supportsAutomaticModelResetInThread: false,
       models: loadCodexModels(settings.models.codex),
       available: configuredAvailable(settings.codexPath, codexCandidates, "codex", true),
       command: () => configuredOrFallback(settings.codexPath, codexCandidates, "codex"),
-      buildArgs: (imagePaths = []) => {
-        const model = settings.models.codex ? ["--model", settings.models.codex] : [];
+      buildArgs: (imagePaths = [], runOptions = {}) => {
+        const selectedModel = typeof runOptions.model === "string" ? runOptions.model : settings.models.codex;
+        const model = selectedModel ? ["--model", selectedModel] : [];
         const imageArgs = buildCodexImageArgs(imagePaths);
         if (settings.sessions.codex) {
           const sandboxMode = settings.allowEdits ? "workspace-write" : "read-only";
@@ -1042,6 +1059,8 @@ function createProviderRegistry(settings, vaultPath) {
       shortLabel: "Claude",
       icon: "sparkles",
       accent: "claude",
+      supportsThreadModelSwitch: true,
+      supportsAutomaticModelResetInThread: false,
       models: CLAUDE_MODELS,
       available: configuredAvailable(settings.reclaudePath, reclaudeCandidates, "reclaude"),
       command: () => configuredOrFallback(settings.reclaudePath, reclaudeCandidates, "reclaude"),
@@ -1056,6 +1075,8 @@ function createProviderRegistry(settings, vaultPath) {
       shortLabel: "Claude",
       icon: "sparkles",
       accent: "claude",
+      supportsThreadModelSwitch: true,
+      supportsAutomaticModelResetInThread: false,
       models: CLAUDE_MODELS,
       available: configuredAvailable(settings.claudePath, claudeCandidates, "", false),
       command: () => configuredOrFallback(settings.claudePath, claudeCandidates, "claude"),
@@ -1439,6 +1460,12 @@ function createConversation(providerId, options = {}) {
   const messages = cleanHistory(options.messages, normalizedProviderId);
   const now = Date.now();
   const providerThreadId = cleanOptionalId(options.providerThreadId) || cleanOptionalId(options.sessionId);
+  const model = typeof options.model === "string" ? options.model : "";
+  const providerThreadModel = providerThreadId
+    ? typeof options.providerThreadModel === "string"
+      ? options.providerThreadModel
+      : model
+    : "";
   const branchKind = BRANCH_KINDS.has(options.branchKind) ? options.branchKind : "";
   const forkMode = FORK_MODES.has(options.forkMode) ? options.forkMode : "before";
   const branchDepth = Number.isInteger(Number(options.branchDepth)) && Number(options.branchDepth) >= 0
@@ -1453,6 +1480,7 @@ function createConversation(providerId, options = {}) {
         : conversationTitle(messages),
     sessionId: providerThreadId,
     providerThreadId,
+    providerThreadModel,
     parentConversationId: cleanOptionalId(options.parentConversationId),
     rootConversationId: cleanOptionalId(options.rootConversationId),
     forkedFromMessageId: cleanOptionalId(options.forkedFromMessageId),
@@ -1460,11 +1488,30 @@ function createConversation(providerId, options = {}) {
     forkMode,
     branchKind,
     branchDepth,
-    model: typeof options.model === "string" ? options.model : "",
+    model,
     createdAt: Number.isFinite(Number(options.createdAt)) ? Number(options.createdAt) : now,
     updatedAt: Number.isFinite(Number(options.updatedAt)) ? Number(options.updatedAt) : now,
     messages,
   };
+}
+
+function selectConversationModel(conversationValue, providerId, model, supportsThreadModelSwitch = true) {
+  const conversation = createConversation(providerId, conversationValue || {});
+  const nextModel = typeof model === "string" ? model : "";
+  const changed = conversation.model !== nextModel;
+  const hasRuntimeThread = Boolean(conversation.providerThreadId || conversation.sessionId);
+  const pendingNativeBranch = conversation.branchKind === "pending" && conversation.messages.length > 0;
+  const detachedThread = changed && !supportsThreadModelSwitch && (hasRuntimeThread || pendingNativeBranch);
+
+  conversation.model = nextModel;
+  if (detachedThread) {
+    conversation.sessionId = null;
+    conversation.providerThreadId = null;
+    conversation.providerThreadModel = "";
+    conversation.branchKind = conversation.messages.length ? "compatible" : "";
+  }
+  if (changed) conversation.updatedAt = Date.now();
+  return { conversation, changed, detachedThread };
 }
 
 function cleanConversations(value, providerId) {
@@ -1507,6 +1554,9 @@ function hydrateSynchronizedConversation(syncValue, localCandidates, providerId)
   // transcript still matches the local runtime that created those IDs.
   synchronized.sessionId = local.sessionId || null;
   synchronized.providerThreadId = local.providerThreadId || local.sessionId || null;
+  synchronized.providerThreadModel = synchronized.providerThreadId
+    ? local.providerThreadModel || local.model || ""
+    : "";
   synchronized.forkedFromTurnId = local.forkedFromTurnId || null;
   synchronized.branchKind = synchronized.providerThreadId ? local.branchKind || "" : synchronized.messages.length ? "compatible" : "";
   const localMessages = new Map(cleanHistory(local.messages, providerId).map((message) => [message.id, message]));
@@ -1765,7 +1815,7 @@ class ConversationHistoryModal extends Modal {
       const metadata = [
         formatConversationTime(conversation.updatedAt),
         `${userCount} 个提问`,
-        this.view.plugin.getModelLabel(provider, conversation.model),
+        this.view.plugin.getConversationModelLabel(provider, conversation),
         conversation.parentConversationId
           ? ({ pending: "待建立", native: "原生分叉", compatible: "兼容分叉" }[conversation.branchKind] || "分支")
           : "",
@@ -2043,15 +2093,33 @@ class AgentWorkspaceView extends ItemView {
 
   async changeModel(model) {
     const previous = this.plugin.settings.models[this.activeProviderId] || "";
-    if (this.plugin.settings.sessions[this.activeProviderId]) {
+    if (this.isRunning()) {
       this.modelSelect.value = previous;
-      new Notice("为避免续聊时模型混乱，请先新建当前 AI 的对话");
+      new Notice("请先停止当前回答，再切换模型");
       return;
     }
-    await this.plugin.updateActiveConversationModel(this.activeProviderId, model);
+    const provider = this.provider();
+    const supportsThreadModelSwitch = Boolean(
+      provider &&
+      provider.supportsThreadModelSwitch &&
+      (model || provider.supportsAutomaticModelResetInThread),
+    );
+    const result = await this.plugin.updateActiveConversationModel(
+      this.activeProviderId,
+      model,
+      supportsThreadModelSwitch,
+    );
     this.updateModelTitle();
     this.updateReferenceHint();
     this.updateConversationChrome();
+    if (result.changed) {
+      const label = this.plugin.getModelLabel(provider, model);
+      new Notice(
+        result.detachedThread
+          ? `已切换到 ${label}；下一条消息将建立兼容线程并保留当前历史`
+          : `已切换到 ${label}；下一条消息生效`,
+      );
+    }
   }
 
   async togglePermission() {
@@ -2273,6 +2341,7 @@ class AgentWorkspaceView extends ItemView {
     });
     const meta = row.createDiv({ cls: "codex-chat-message-meta" });
     let statusBadge = null;
+    let detailsEl = null;
     if (kind !== "message") {
       const timelineIcon = meta.createSpan({ cls: "codex-chat-timeline-icon" });
       const icons = {
@@ -2292,13 +2361,21 @@ class AgentWorkspaceView extends ItemView {
         cls: "codex-chat-timeline-status",
         text: this.formatTimelineStatus(message.status),
       });
+      const provider = this.plugin.getProvider(message.providerId || this.activeProviderId) || this.provider();
+      detailsEl = meta.createSpan({
+        cls: "codex-chat-message-details",
+        text: this.formatMessageDetails(message, provider),
+      });
     } else if (message.role === "user") {
       meta.createSpan({ text: "你" });
+      const provider = this.plugin.getProvider(message.providerId || this.activeProviderId) || this.provider();
+      const details = this.formatMessageDetails(message, provider);
+      detailsEl = meta.createSpan({ cls: "codex-chat-message-details", text: details });
     } else if (message.role === "assistant") {
       const provider = this.plugin.getProvider(message.providerId || this.activeProviderId) || this.provider();
       meta.createSpan({ text: provider.shortLabel });
       const details = this.formatMessageDetails(message, provider);
-      if (details) meta.createSpan({ cls: "codex-chat-message-details", text: details });
+      detailsEl = meta.createSpan({ cls: "codex-chat-message-details", text: details });
     } else {
       meta.createSpan({ text: "提示" });
     }
@@ -2312,7 +2389,7 @@ class AgentWorkspaceView extends ItemView {
     if (kind === "approval" && this.pendingApprovals.has(message.id)) {
       approvalActions = this.renderApprovalActions(row, message);
     }
-    this.messageRows.set(message.id, { row, body, meta, statusBadge, approvalActions });
+    this.messageRows.set(message.id, { row, body, meta, detailsEl, statusBadge, approvalActions });
 
     if (message.role === "user" || message.role === "assistant") {
       const tools = row.createDiv({ cls: "codex-chat-message-actions" });
@@ -2361,6 +2438,10 @@ class AgentWorkspaceView extends ItemView {
     rendered.row.toggleClass("is-failed", message.status === "failed");
     for (const status of MESSAGE_STATUSES) rendered.row.toggleClass(`status-${status}`, message.status === status);
     if (rendered.statusBadge) rendered.statusBadge.setText(this.formatTimelineStatus(message.status));
+    if (rendered.detailsEl) {
+      const provider = this.plugin.getProvider(message.providerId || this.activeProviderId) || this.provider();
+      rendered.detailsEl.setText(this.formatMessageDetails(message, provider));
+    }
     if (rendered.approvalActions && !this.pendingApprovals.has(message.id)) {
       rendered.approvalActions.empty();
       rendered.approvalActions.createSpan({
@@ -2508,6 +2589,24 @@ class AgentWorkspaceView extends ItemView {
     this.contentEl.toggleClass("is-running", running);
   }
 
+  runModel(run) {
+    if (!run) return "";
+    return run.actualModel || run.model || "";
+  }
+
+  applyRunActualModel(run, model) {
+    if (this.run !== run || typeof model !== "string" || !model) return;
+    run.actualModel = model;
+    for (let index = run.userMessageIndex; index < this.messages.length; index += 1) {
+      const message = this.messages[index];
+      if (!message || message.providerId !== run.providerId) continue;
+      message.model = model;
+      this.updateMessageRow(message, message.status === "running");
+    }
+    void this.plugin.updateConversationThreadModel(run.providerId, run.conversationId, model);
+    void this.plugin.saveConversation(run.providerId, this.messages);
+  }
+
   async send() {
     const userText = this.inputEl.value.trim();
     const attachments = cleanAttachments(this.draftAttachments);
@@ -2528,13 +2627,17 @@ class AgentWorkspaceView extends ItemView {
       new Notice(shortError(error));
       return;
     }
+    const selectedModel = this.plugin.settings.models[this.activeProviderId] || "";
     const historyBeforeSend = cleanHistory(this.messages, this.activeProviderId);
     const conversationBeforeSend = this.plugin.getActiveConversation(this.activeProviderId);
-    const cliRunOptions = this.plugin.prepareCliConversationRun(
-      this.activeProviderId,
-      conversationBeforeSend,
-      historyBeforeSend,
-    );
+    const cliRunOptions = {
+      ...this.plugin.prepareCliConversationRun(
+        this.activeProviderId,
+        conversationBeforeSend,
+        historyBeforeSend,
+      ),
+      model: selectedModel,
+    };
     const requestText = userText || "请分析这些图片。";
 
     const baseContext = this.attachContext
@@ -2556,7 +2659,7 @@ class AgentWorkspaceView extends ItemView {
       content: requestText,
       notePath: baseContext.notePath || "",
       providerId: this.activeProviderId,
-      model: this.plugin.settings.models[this.activeProviderId] || "",
+      model: selectedModel,
       status: "completed",
       meta: {},
       attachments,
@@ -2569,15 +2672,17 @@ class AgentWorkspaceView extends ItemView {
     await this.plugin.saveConversation(this.activeProviderId, this.messages);
     this.updateConversationChrome();
 
-    let prompt = this.plugin.buildPrompt(requestText, baseContext);
-    if (cliRunOptions.compatibleHistory) {
-      prompt = buildCompatibleConversationPrompt(cliRunOptions.compatibleHistory, prompt);
-    }
+    const prompt = this.plugin.buildPrompt(requestText, baseContext);
+    const cliPrompt = cliRunOptions.compatibleHistory
+      ? buildCompatibleConversationPrompt(cliRunOptions.compatibleHistory, prompt)
+      : prompt;
     this.stdoutBuffer = "";
     this.stderrBuffer = "";
     this.receivedAssistant = false;
     this.run = {
       providerId: this.activeProviderId,
+      model: selectedModel,
+      actualModel: "",
       conversationId: (this.plugin.getActiveConversation(this.activeProviderId) || {}).id || "",
       userMessageId: userMessage.id,
       userMessageIndex: this.messages.length - 1,
@@ -2623,7 +2728,14 @@ class AgentWorkspaceView extends ItemView {
       }
     }
 
-    this.startCliRun(run, provider, prompt, imagePaths);
+    const refreshedConversation = this.plugin.getActiveConversation(this.activeProviderId);
+    const fallbackPrompt =
+      this.activeProviderId === "codex" &&
+      refreshedConversation &&
+      (refreshedConversation.providerThreadId || refreshedConversation.sessionId)
+        ? prompt
+        : cliPrompt;
+    this.startCliRun(run, provider, fallbackPrompt, imagePaths);
   }
 
   startCliRun(run, provider, prompt, imagePaths) {
@@ -2664,9 +2776,10 @@ class AgentWorkspaceView extends ItemView {
     run.backend = "app-server";
     const conversation = this.plugin.getActiveConversation("codex");
     if (!conversation || conversation.id !== run.conversationId) throw new Error("当前 Codex 会话已经切换");
-    const threadId = await this.plugin.ensureCodexConversationThread(conversation, run.userMessageId);
+    const thread = await this.plugin.ensureCodexConversationThread(conversation, run.userMessageId, run.model);
     if (this.run !== run) return;
-    run.threadId = threadId;
+    run.threadId = thread.threadId;
+    if (thread.model) this.applyRunActualModel(run, thread.model);
     const refreshedConversation = this.plugin.getActiveConversation("codex");
     if (refreshedConversation && refreshedConversation.id === run.conversationId) {
       const providerMetadata = new Map(
@@ -2705,17 +2818,19 @@ class AgentWorkspaceView extends ItemView {
     const result = await client.request(
       "turn/start",
       buildCodexTurnStartParams({
-        threadId,
+        threadId: run.threadId,
         prompt,
         imagePaths,
         userMessageId: run.userMessageId,
         settings: this.plugin.settings,
+        model: run.model,
         vaultPath: this.plugin.vaultPath,
       }),
     );
     if (!result || !result.turn || typeof result.turn.id !== "string") {
       throw new Error("Codex 没有返回回合 ID");
     }
+    await this.plugin.updateConversationThreadModel("codex", run.conversationId, this.runModel(run));
     this.handleCodexTurnStarted(run, result.turn);
     if (run.stopRequested) await this.interruptCodexRun(run);
   }
@@ -2738,7 +2853,7 @@ class AgentWorkspaceView extends ItemView {
       content: approval.content || "Codex 请求继续执行此操作。",
       notePath: "",
       providerId: "codex",
-      model: this.plugin.settings.models.codex || "",
+      model: this.runModel(run),
       status: "running",
       meta: {},
     };
@@ -2786,6 +2901,11 @@ class AgentWorkspaceView extends ItemView {
 
     if (action.kind === "turnStarted") {
       this.handleCodexTurnStarted(run, action.turn);
+      return;
+    }
+    if (action.kind === "modelRerouted") {
+      this.applyRunActualModel(run, action.model);
+      this.statusEl.setText(`Codex 已改用 ${action.model}`);
       return;
     }
     if (action.kind === "itemStarted") {
@@ -2920,7 +3040,7 @@ class AgentWorkspaceView extends ItemView {
       content: "",
       notePath: this.plugin.getEditorContext(false).notePath || "",
       providerId: "codex",
-      model: this.plugin.settings.models.codex || "",
+      model: this.runModel(run),
       status: "running",
       meta: {},
     };
@@ -2958,7 +3078,7 @@ class AgentWorkspaceView extends ItemView {
       content: descriptor.content,
       notePath: "",
       providerId: "codex",
-      model: this.plugin.settings.models.codex || "",
+      model: this.runModel(run),
       status: descriptor.status,
       meta: {},
     };
@@ -2986,7 +3106,7 @@ class AgentWorkspaceView extends ItemView {
         content: String(diff || ""),
         notePath: "",
         providerId: "codex",
-        model: this.plugin.settings.models.codex || "",
+        model: this.runModel(run),
         status: "running",
         meta: {},
       };
@@ -3014,7 +3134,7 @@ class AgentWorkspaceView extends ItemView {
       content: String(content || ""),
       notePath: "",
       providerId: "codex",
-      model: this.plugin.settings.models.codex || "",
+      model: this.runModel(run),
       status: "completed",
       meta: {},
     };
@@ -3042,7 +3162,9 @@ class AgentWorkspaceView extends ItemView {
     if (!provider) return;
     for (const action of provider.parseEvent(event)) {
       if (action.kind === "session") {
-        void this.plugin.updateSession(this.run.providerId, action.id);
+        void this.plugin.updateSession(this.run.providerId, action.id, this.runModel(this.run));
+      } else if (action.kind === "model") {
+        this.applyRunActualModel(this.run, action.value);
       } else if (action.kind === "status") {
         this.statusEl.setText(action.text);
       } else if (action.kind === "assistant") {
@@ -3070,7 +3192,7 @@ class AgentWorkspaceView extends ItemView {
       content: normalized,
       notePath: this.plugin.getEditorContext(false).notePath || "",
       providerId: this.run.providerId,
-      model: this.plugin.settings.models[this.run.providerId] || "",
+      model: this.runModel(this.run),
       status: "completed",
       meta: {},
     };
@@ -3713,7 +3835,7 @@ module.exports = class AgentWorkspacePlugin extends Plugin {
         args: ["app-server", "--stdio"],
         cwd: this.vaultPath,
         env: { ...process.env, NO_COLOR: "1" },
-        clientInfo: { version: "0.6.0" },
+        clientInfo: { version: "0.7.0" },
       });
       this.codexAppServer.onError((error) => {
         this.codexAppServerError = shortError(error);
@@ -3740,12 +3862,15 @@ module.exports = class AgentWorkspacePlugin extends Plugin {
     };
   }
 
-  async updateConversationFromCodexThread(conversationId, thread, branchKind) {
+  async updateConversationFromCodexThread(conversationId, thread, branchKind, providerThreadModel = "") {
     if (!thread || typeof thread.id !== "string" || !thread.id) throw new Error("Codex 没有返回线程 ID");
     const conversation = this.getConversations("codex").find((item) => item.id === conversationId);
     if (!conversation) throw new Error("当前 Codex 会话已不存在");
     conversation.sessionId = thread.id;
     conversation.providerThreadId = thread.id;
+    if (typeof providerThreadModel === "string" && providerThreadModel) {
+      conversation.providerThreadModel = providerThreadModel;
+    }
     if (BRANCH_KINDS.has(branchKind)) conversation.branchKind = branchKind;
     if (Array.isArray(thread.turns) && thread.turns.length) {
       conversation.messages = cleanHistory(mapCodexTurnsToMessages(conversation.messages, thread.turns), "codex");
@@ -3758,28 +3883,42 @@ module.exports = class AgentWorkspacePlugin extends Plugin {
     return conversation;
   }
 
-  async startCodexThread(client) {
-    const result = await client.request("thread/start", buildCodexThreadStartParams(this.settings, this.vaultPath));
+  async startCodexThread(client, model = "") {
+    const result = await client.request(
+      "thread/start",
+      buildCodexThreadStartParams(this.settings, this.vaultPath, model),
+    );
     if (!result || !result.thread) throw new Error("Codex 新建线程失败");
-    return result.thread;
+    return result;
   }
 
-  async ensureCodexConversationThread(conversationValue, currentUserMessageId = null) {
+  async ensureCodexConversationThread(conversationValue, currentUserMessageId = null, selectedModel = "") {
     const conversation = this.getConversations("codex").find((item) => item.id === conversationValue.id);
     if (!conversation) throw new Error("当前 Codex 会话已不存在");
     const client = await this.ensureCodexAppServer();
     const existingThreadId = conversation.providerThreadId || conversation.sessionId;
     if (existingThreadId) {
+      let runtimeModel = conversation.providerThreadModel || "";
       if (!this.codexLoadedThreads.has(existingThreadId)) {
         const result = await client.request("thread/resume", { threadId: existingThreadId });
         if (!result || !result.thread) throw new Error("Codex 恢复线程失败");
-        await this.updateConversationFromCodexThread(conversation.id, result.thread, conversation.branchKind);
+        runtimeModel = result.model || runtimeModel;
+        await this.updateConversationFromCodexThread(
+          conversation.id,
+          result.thread,
+          conversation.branchKind,
+          runtimeModel,
+        );
       }
-      return existingThreadId;
+      return {
+        threadId: existingThreadId,
+        model: selectedModel || runtimeModel,
+      };
     }
 
     let thread;
     let branchKind = conversation.branchKind;
+    let resolvedModel = selectedModel;
     if (conversation.parentConversationId && conversation.branchKind === "pending") {
       const parent = this.getConversations("codex").find((item) => item.id === conversation.parentConversationId);
       const parentThreadId = parent && (parent.providerThreadId || parent.sessionId);
@@ -3790,9 +3929,12 @@ module.exports = class AgentWorkspacePlugin extends Plugin {
         const result = await client.request("thread/fork", { threadId: parentThreadId, lastTurnId });
         if (!result || !result.thread) throw new Error("Codex 分叉线程失败");
         thread = result.thread;
+        resolvedModel = resolvedModel || result.model || "";
         branchKind = "native";
       } else {
-        thread = await this.startCodexThread(client);
+        const result = await this.startCodexThread(client, selectedModel);
+        thread = result.thread;
+        resolvedModel = result.model || selectedModel;
         const items = buildInjectedHistoryItems(
           conversation.messages.filter((message) => message.id !== currentUserMessageId),
         );
@@ -3804,7 +3946,9 @@ module.exports = class AgentWorkspacePlugin extends Plugin {
         }
       }
     } else {
-      thread = await this.startCodexThread(client);
+      const result = await this.startCodexThread(client, selectedModel);
+      thread = result.thread;
+      resolvedModel = result.model || selectedModel;
       const items = buildInjectedHistoryItems(
         conversation.messages.filter((message) => message.id !== currentUserMessageId),
       );
@@ -3813,8 +3957,8 @@ module.exports = class AgentWorkspacePlugin extends Plugin {
         branchKind = "compatible";
       }
     }
-    await this.updateConversationFromCodexThread(conversation.id, thread, branchKind);
-    return thread.id;
+    await this.updateConversationFromCodexThread(conversation.id, thread, branchKind, resolvedModel);
+    return { threadId: thread.id, model: resolvedModel };
   }
 
   getProviders() {
@@ -3830,8 +3974,14 @@ module.exports = class AgentWorkspacePlugin extends Plugin {
   }
 
   prepareCliConversationRun(providerId, conversationValue, historyBeforeSend) {
-    if (!["reclaude", "claude"].includes(providerId)) return {};
     const conversation = conversationValue && conversationValue.providerId === providerId ? conversationValue : null;
+    if (providerId === "codex") {
+      const ownThreadId = conversation && (conversation.providerThreadId || conversation.sessionId);
+      return conversation && !ownThreadId && historyBeforeSend.length
+        ? { compatibleHistory: cleanHistory(historyBeforeSend, providerId) }
+        : {};
+    }
+    if (!["reclaude", "claude"].includes(providerId)) return {};
     if (!conversation) return { sessionId: this.settings.sessions[providerId] || null };
     const ownSessionId = conversation.providerThreadId || conversation.sessionId || null;
     if (conversation.parentConversationId && conversation.branchKind === "pending") {
@@ -3864,6 +4014,15 @@ module.exports = class AgentWorkspacePlugin extends Plugin {
     if (!provider) return "";
     const match = provider.models.find((model) => model.value === (value || ""));
     return match ? match.label : value || "默认模型";
+  }
+
+  getConversationModelLabel(provider, conversation) {
+    const messages = cleanHistory(conversation && conversation.messages, conversation && conversation.providerId)
+      .filter((message) => message.kind === "message" && ["user", "assistant"].includes(message.role));
+    const models = new Set(messages.map((message) => message.model || ""));
+    if (models.size > 1) return "多模型";
+    if (models.size === 1) return this.getModelLabel(provider, [...models][0]);
+    return this.getModelLabel(provider, conversation && conversation.model);
   }
 
   getHistory(providerId) {
@@ -3922,12 +4081,17 @@ module.exports = class AgentWorkspacePlugin extends Plugin {
     return conversation;
   }
 
-  async updateSession(providerId, sessionId) {
+  async updateSession(providerId, sessionId, providerThreadModel = "") {
     this.settings.sessions[providerId] = sessionId || null;
     const conversation = this.getActiveConversation(providerId);
     if (conversation) {
       conversation.sessionId = sessionId || null;
       conversation.providerThreadId = sessionId || null;
+      if (sessionId && typeof providerThreadModel === "string" && providerThreadModel) {
+        conversation.providerThreadModel = providerThreadModel;
+      } else if (!sessionId) {
+        conversation.providerThreadModel = "";
+      }
       if (["reclaude", "claude"].includes(providerId) && conversation.branchKind === "pending" && sessionId) {
         conversation.branchKind = "native";
       }
@@ -3937,15 +4101,35 @@ module.exports = class AgentWorkspacePlugin extends Plugin {
     await this.persist();
   }
 
-  async updateActiveConversationModel(providerId, model) {
-    this.settings.models[providerId] = model || "";
-    const conversation = this.getActiveConversation(providerId);
-    if (conversation) {
-      conversation.model = model || "";
-      conversation.updatedAt = Date.now();
-      this.storeConversation(providerId, conversation);
+  async updateConversationThreadModel(providerId, conversationId, model) {
+    if (typeof model !== "string" || !model) return null;
+    const conversation = this.getConversations(providerId).find((item) => item.id === conversationId);
+    if (!conversation) return null;
+    conversation.providerThreadModel = model;
+    conversation.updatedAt = Date.now();
+    this.storeConversation(providerId, conversation);
+    if (this.settings.activeConversationIds[providerId] === conversation.id) {
+      this.syncActiveConversationState(providerId);
     }
     await this.persist();
+    return conversation;
+  }
+
+  async updateActiveConversationModel(providerId, model, supportsThreadModelSwitch = true) {
+    const conversation = this.getActiveConversation(providerId);
+    if (conversation) {
+      const result = selectConversationModel(conversation, providerId, model, supportsThreadModelSwitch);
+      this.storeConversation(providerId, result.conversation);
+      this.settings.models[providerId] = result.conversation.model;
+      this.syncActiveConversationState(providerId);
+      await this.persist();
+      return result;
+    }
+    const nextModel = typeof model === "string" ? model : "";
+    const changed = (this.settings.models[providerId] || "") !== nextModel;
+    this.settings.models[providerId] = nextModel;
+    await this.persist();
+    return { conversation: null, changed, detachedThread: false };
   }
 
   async createNewConversation(providerId) {

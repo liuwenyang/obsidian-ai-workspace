@@ -108,6 +108,17 @@ const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   }
 
   const codex = plugin.getProviders().find((provider) => provider.id === "codex");
+  assert.strictEqual(
+    plugin.getConversationModelLabel(codex, {
+      providerId: "codex",
+      messages: [
+        { role: "user", content: "第一轮", model: "gpt-one" },
+        { role: "assistant", content: "第一答", model: "gpt-one" },
+        { role: "user", content: "第二轮", model: "gpt-two" },
+      ],
+    }),
+    "多模型",
+  );
   const newArgs = codex.buildArgs([absoluteImage]);
   assert.deepStrictEqual(newArgs.slice(-3), ["--image", absoluteImage, "-"]);
   if (process.platform === "win32") {
@@ -129,12 +140,32 @@ const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   assert.ok(resumeArgs.includes("resume"));
   assert.ok(resumeArgs.includes("--image"));
   assert.ok(resumeArgs.includes(absoluteImage));
+  const codexTurnModelArgs = codex.buildArgs([], { model: "gpt-turn-model" });
+  assert.deepStrictEqual(
+    codexTurnModelArgs.slice(codexTurnModelArgs.indexOf("--model"), codexTurnModelArgs.indexOf("--model") + 2),
+    ["--model", "gpt-turn-model"],
+    "Codex CLI invocation must use the model captured for this turn",
+  );
 
   const reclaude = plugin.getProviders().find((provider) => provider.id === "reclaude");
   const forkArgs = reclaude.buildArgs([], { sessionId: "parent-session", forkSession: true });
   assert.ok(forkArgs.includes("--resume"));
   assert.ok(forkArgs.includes("parent-session"));
   assert.ok(forkArgs.includes("--fork-session"));
+  const claudeTurnModelArgs = reclaude.buildArgs([], { sessionId: "parent-session", model: "opus" });
+  assert.deepStrictEqual(
+    claudeTurnModelArgs.slice(claudeTurnModelArgs.indexOf("--model"), claudeTurnModelArgs.indexOf("--model") + 2),
+    ["--model", "opus"],
+    "Claude invocation must use the model captured for this turn",
+  );
+  assert.deepStrictEqual(
+    reclaude.parseEvent({
+      type: "assistant",
+      message: { model: "claude-opus-actual", content: [{ type: "text", text: "完成" }] },
+    }).find((action) => action.kind === "model"),
+    { kind: "model", value: "claude-opus-actual" },
+    "Claude stream events must expose the resolved model for message metadata",
+  );
 
   const parentConversation = {
     id: "claude-parent",
@@ -184,6 +215,29 @@ const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   assert.strictEqual(compatibleOptions.compatibleHistory[0].id, "claude-u1");
   assert.strictEqual(compatibleBranch.branchKind, "compatible");
 
+  plugin.settings.conversations.reclaude = [parentConversation];
+  plugin.settings.activeConversationIds.reclaude = parentConversation.id;
+  plugin.settings.sessions.reclaude = "parent-session";
+  plugin.settings.models.reclaude = "sonnet";
+  const nativeSwitch = await plugin.updateActiveConversationModel("reclaude", "opus", true);
+  assert.strictEqual(nativeSwitch.changed, true);
+  assert.strictEqual(nativeSwitch.detachedThread, false);
+  assert.strictEqual(nativeSwitch.conversation.providerThreadId, "parent-session");
+  assert.strictEqual(plugin.settings.models.reclaude, "opus");
+
+  const compatibleSwitch = await plugin.updateActiveConversationModel("reclaude", "sonnet", false);
+  assert.strictEqual(compatibleSwitch.detachedThread, true);
+  assert.strictEqual(compatibleSwitch.conversation.providerThreadId, null);
+  assert.strictEqual(plugin.settings.sessions.reclaude, null);
+  assert.strictEqual(compatibleSwitch.conversation.branchKind, "compatible");
+  const switchedRun = plugin.prepareCliConversationRun(
+    "reclaude",
+    compatibleSwitch.conversation,
+    compatibleSwitch.conversation.messages,
+  );
+  assert.strictEqual(switchedRun.sessionId, null);
+  assert.strictEqual(switchedRun.compatibleHistory.length, 2);
+
   const prompt = plugin.buildPrompt("分析图片", {
     notePath: "Notes/source.md",
     selectedText: "",
@@ -197,6 +251,7 @@ const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   plugin.settings.conversations.codex = [
     {
       id: "conversation-1",
+      providerId: "codex",
       title: "新对话",
       sessionId: null,
       model: "",
@@ -206,6 +261,17 @@ const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     },
   ];
   plugin.settings.activeConversationIds.codex = "conversation-1";
+  plugin.settings.conversations.codex[0].messages = [
+    { id: "old-u", role: "user", content: "旧问题", providerId: "codex", model: "gpt-old" },
+    { id: "old-a", role: "assistant", content: "旧回答", providerId: "codex", model: "gpt-old" },
+  ];
+  const codexCompatibleRun = plugin.prepareCliConversationRun(
+    "codex",
+    plugin.settings.conversations.codex[0],
+    plugin.settings.conversations.codex[0].messages,
+  );
+  assert.strictEqual(codexCompatibleRun.compatibleHistory.length, 2);
+  plugin.settings.conversations.codex[0].messages = [];
   await plugin.saveConversation("codex", [
     {
       role: "user",

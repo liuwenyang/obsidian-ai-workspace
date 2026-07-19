@@ -1,7 +1,7 @@
 {
   "id": "codex-chat",
   "name": "AI Workspace for Codex & Claude",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "minAppVersion": "1.7.2",
   "description": "A stable, context-aware Obsidian workspace for local Codex, ReClaude, and Claude Code conversations.",
   "author": "Local",

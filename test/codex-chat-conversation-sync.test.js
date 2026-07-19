@@ -33,6 +33,7 @@ function conversation(id, messages, updatedAt, overrides = {}) {
     title: `Conversation ${id}`,
     sessionId: `session-${id}`,
     providerThreadId: `thread-${id}`,
+    providerThreadModel: "device-local-model",
     forkedFromTurnId: `turn-parent-${id}`,
     createdAt: 100,
     updatedAt,
@@ -70,6 +71,7 @@ const original = conversation(
 const safeDocument = createConversationSyncDocument(original);
 assert.strictEqual(safeDocument.conversation.sessionId, undefined);
 assert.strictEqual(safeDocument.conversation.providerThreadId, undefined);
+assert.strictEqual(safeDocument.conversation.providerThreadModel, undefined);
 assert.strictEqual(safeDocument.conversation.forkedFromTurnId, undefined);
 assert.strictEqual(safeDocument.conversation.messages[0].providerTurnId, undefined);
 assert.strictEqual(safeDocument.conversation.messages[0].providerItemId, undefined);

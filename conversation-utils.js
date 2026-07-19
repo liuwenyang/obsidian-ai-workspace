@@ -85,6 +85,12 @@ function createConversation(providerId, options = {}) {
   const messages = cleanHistory(options.messages, normalizedProviderId);
   const now = Date.now();
   const providerThreadId = cleanOptionalId(options.providerThreadId) || cleanOptionalId(options.sessionId);
+  const model = typeof options.model === "string" ? options.model : "";
+  const providerThreadModel = providerThreadId
+    ? typeof options.providerThreadModel === "string"
+      ? options.providerThreadModel
+      : model
+    : "";
   const branchKind = BRANCH_KINDS.has(options.branchKind) ? options.branchKind : "";
   const forkMode = FORK_MODES.has(options.forkMode) ? options.forkMode : "before";
   const branchDepth = Number.isInteger(Number(options.branchDepth)) && Number(options.branchDepth) >= 0
@@ -100,6 +106,8 @@ function createConversation(providerId, options = {}) {
     // sessionId remains during migration because the existing provider adapters use it.
     sessionId: providerThreadId,
     providerThreadId,
+    // This is device-local runtime metadata. `model` is the next/last selected model.
+    providerThreadModel,
     parentConversationId: cleanOptionalId(options.parentConversationId),
     rootConversationId: cleanOptionalId(options.rootConversationId),
     forkedFromMessageId: cleanOptionalId(options.forkedFromMessageId),
@@ -107,11 +115,32 @@ function createConversation(providerId, options = {}) {
     forkMode,
     branchKind,
     branchDepth,
-    model: typeof options.model === "string" ? options.model : "",
+    model,
     createdAt: Number.isFinite(Number(options.createdAt)) ? Number(options.createdAt) : now,
     updatedAt: Number.isFinite(Number(options.updatedAt)) ? Number(options.updatedAt) : now,
     messages,
   };
+}
+
+function selectConversationModel(conversationValue, providerId, model, supportsThreadModelSwitch = true) {
+  const conversation = createConversation(providerId, conversationValue || {});
+  const nextModel = typeof model === "string" ? model : "";
+  const changed = conversation.model !== nextModel;
+  const hasRuntimeThread = Boolean(conversation.providerThreadId || conversation.sessionId);
+  const pendingNativeBranch = conversation.branchKind === "pending" && conversation.messages.length > 0;
+  const detachedThread = changed && !supportsThreadModelSwitch && (hasRuntimeThread || pendingNativeBranch);
+
+  conversation.model = nextModel;
+  if (detachedThread) {
+    // An incompatible Provider gets a fresh runtime thread on the next turn;
+    // the visible local transcript remains the source for compatible history injection.
+    conversation.sessionId = null;
+    conversation.providerThreadId = null;
+    conversation.providerThreadModel = "";
+    conversation.branchKind = conversation.messages.length ? "compatible" : "";
+  }
+  if (changed) conversation.updatedAt = Date.now();
+  return { conversation, changed, detachedThread };
 }
 
 function cleanConversations(value, providerId) {
@@ -224,6 +253,7 @@ module.exports = {
   createConversationId,
   createMessageId,
   forkConversation,
+  selectConversationModel,
   previousProviderTurnId,
   providerForkTurnId,
   isCompleteConversationBranch,

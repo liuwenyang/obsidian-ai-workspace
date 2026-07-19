@@ -8,6 +8,7 @@ const {
   providerForkTurnId,
   isCompleteConversationBranch,
   buildCompatibleConversationPrompt,
+  selectConversationModel,
 } = require("../conversation-utils");
 
 const legacy = createConversation("codex", {
@@ -26,6 +27,55 @@ assert.strictEqual(legacy.providerId, "codex");
 assert.ok(legacy.messages.every((message) => typeof message.id === "string" && message.id.length > 0));
 assert.ok(legacy.messages.every((message) => message.status === "completed"));
 assert.ok(legacy.messages.every((message) => message.kind === "message"));
+
+const mixedModelHistory = cleanHistory([
+  { role: "user", content: "先规划", providerId: "codex", model: "gpt-5.4" },
+  { role: "assistant", content: "规划结果", providerId: "codex", model: "gpt-5.4" },
+  { role: "user", content: "再快速整理", providerId: "codex", model: "gpt-5.4-mini" },
+], "codex");
+assert.deepStrictEqual(
+  mixedModelHistory.map((message) => message.model),
+  ["gpt-5.4", "gpt-5.4", "gpt-5.4-mini"],
+  "each message must preserve the model actually selected for its turn",
+);
+
+const nativeModelSwitch = selectConversationModel(
+  createConversation("codex", {
+    providerThreadId: "codex-thread",
+    model: "gpt-5.4",
+    providerThreadModel: "gpt-5.4",
+    messages: mixedModelHistory.slice(0, 2),
+  }),
+  "codex",
+  "gpt-5.4-mini",
+  true,
+);
+assert.strictEqual(nativeModelSwitch.changed, true);
+assert.strictEqual(nativeModelSwitch.detachedThread, false);
+assert.strictEqual(nativeModelSwitch.conversation.providerThreadId, "codex-thread");
+assert.strictEqual(nativeModelSwitch.conversation.providerThreadModel, "gpt-5.4");
+assert.strictEqual(nativeModelSwitch.conversation.model, "gpt-5.4-mini");
+
+const compatibleModelSwitch = selectConversationModel(
+  createConversation("reclaude", {
+    providerThreadId: "claude-session",
+    model: "sonnet",
+    providerThreadModel: "sonnet",
+    messages: [
+      { role: "user", content: "问题", model: "sonnet" },
+      { role: "assistant", content: "回答", model: "sonnet" },
+    ],
+  }),
+  "reclaude",
+  "opus",
+  false,
+);
+assert.strictEqual(compatibleModelSwitch.detachedThread, true);
+assert.strictEqual(compatibleModelSwitch.conversation.providerThreadId, null);
+assert.strictEqual(compatibleModelSwitch.conversation.sessionId, null);
+assert.strictEqual(compatibleModelSwitch.conversation.providerThreadModel, "");
+assert.strictEqual(compatibleModelSwitch.conversation.branchKind, "compatible");
+assert.strictEqual(compatibleModelSwitch.conversation.messages.length, 2);
 
 const cleanedAgain = cleanHistory(legacy.messages, "codex");
 assert.deepStrictEqual(
@@ -55,6 +105,7 @@ assert.strictEqual(before.forkedFromMessageId, "u2");
 assert.strictEqual(before.forkedFromTurnId, "turn-2");
 assert.strictEqual(before.branchKind, "pending");
 assert.strictEqual(before.branchDepth, 1);
+assert.strictEqual(before.providerThreadModel, "");
 
 const through = forkConversation(source, "codex", "a1", "through");
 assert.deepStrictEqual(through.messages.map((message) => message.id), ["u1", "a1"]);

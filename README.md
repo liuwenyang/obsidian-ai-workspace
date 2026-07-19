@@ -9,6 +9,7 @@ AI Workspace is a desktop-only Obsidian plugin that provides a native conversati
 - Image selection, paste, drag-and-drop, history, and Vault-relative attachments
 - Editable prompts implemented as traceable conversation branches
 - Native or compatible conversation forking and thread recovery
+- Per-turn model switching without creating a new conversation
 - Rich reasoning, plan, command, tool, file-change, approval, and diff timeline cards
 - Cross-device conversation sync through Vault Markdown records
 - Read-only and workspace-write permission modes
@@ -20,6 +21,16 @@ The repository deliberately excludes `data.json`. That file contains device-loca
 Cross-device conversation records are stored separately in the Vault at `AI Workspace/Conversations/`. They belong to the user's Vault sync workflow and are not part of this source repository.
 
 The plugin does not store API keys. It calls CLI tools that are already authenticated on the local machine.
+
+## Per-turn model switching
+
+The model selector belongs to the next turn, not to the whole conversation:
+
+- A model can be changed after the current response finishes; Provider and model selectors stay locked while a turn is running.
+- The selected model is captured when sending and is written to every user, assistant, and timeline message created by that turn.
+- Existing Codex, Claude Code, and ReClaude sessions are resumed with the newly selected model because their current CLI/protocol versions accept a model override on resume/turn start.
+- A Provider adapter that cannot safely change models in an existing thread must declare that capability. The plugin then detaches the runtime thread and starts a compatible thread with the visible conversation history injected, preserving the local conversation.
+- Older conversations without runtime-model metadata keep their current thread until the user actually changes the model.
 
 ## Install from this private repository
 
