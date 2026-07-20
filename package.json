@@ -1,0 +1,23 @@
+{
+  "name": "obsidian-ai-workspace",
+  "version": "0.7.0",
+  "private": true,
+  "description": "A native Obsidian workspace for Codex, Claude Code, and ReClaude conversations.",
+  "author": "Silence",
+  "license": "MIT",
+  "scripts": {
+    "check": "node --check main.js && node --check codex-app-server-client.js && node --check conversation-utils.js && node --check attachment-utils.js && node --check conversation-sync-utils.js",
+    "lint": "eslint .",
+    "release:check": "node scripts/validate-release.mjs",
+    "test": "npm run check && node test/codex-chat-app-server-client.test.js && node test/codex-chat-conversation-domain.test.js && node test/codex-chat-image-attachments.test.js && node test/codex-chat-image-integration.test.js && node test/codex-chat-conversation-sync.test.js && node test/codex-chat-conversation-sync-integration.test.js",
+    "verify": "npm test && npm run lint && npm run release:check"
+  },
+  "engines": {
+    "node": "^20.19.0 || ^22.13.0 || >=24"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.4",
+    "eslint-plugin-obsidianmd": "^0.4.0",
+    "globals": "^17.6.0"
+  }
+}
