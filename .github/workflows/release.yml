@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag matching manifest.json
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -11,11 +17,16 @@ permissions:
   attestations: write
   artifact-metadata: write
 
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - name: Use Node.js
         uses: actions/setup-node@v6
         with:
@@ -25,7 +36,7 @@ jobs:
       - name: Validate source
         run: npm run verify
       - name: Validate release tag
-        run: npm run release:check -- "${{ github.ref_name }}"
+        run: npm run release:check -- "$RELEASE_TAG"
       - name: Attest release assets
         uses: actions/attest@v4
         with:
@@ -37,8 +48,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "${{ github.ref_name }}" \
+          gh release create "$RELEASE_TAG" \
+            --title "$RELEASE_TAG" \
             --draft \
             --generate-notes \
             main.js manifest.json styles.css
