@@ -7,7 +7,6 @@ const {
   Plugin,
   PluginSettingTab,
   Setting,
-  setCssProps,
   setIcon,
 } = require("obsidian");
 const { spawn } = require("child_process");
@@ -1844,6 +1843,8 @@ class AgentWorkspaceView extends ItemView {
     this.messages = plugin.getHistory(this.activeProviderId);
     this.attachContext = plugin.settings.includeCurrentNote;
     this.draftAttachments = [];
+    this.draftQuotes = [];
+    this.quoteHighlightRanges = new Set();
     this.isImportingAttachments = false;
     this.draftRevisionOf = null;
     this.pendingApprovals = new Map();
@@ -1868,6 +1869,7 @@ class AgentWorkspaceView extends ItemView {
   }
 
   async onOpen() {
+    this.isClosed = false;
     this.contentEl.empty();
     this.contentEl.addClass("codex-chat-root");
 
@@ -1923,6 +1925,45 @@ class AgentWorkspaceView extends ItemView {
 
     const composer = this.contentEl.createDiv({ cls: "codex-chat-composer" });
     this.composerEl = composer;
+    this.contentEl.insertBefore(this.contextBar, composer);
+    this.quoteButton = this.contentEl.createEl("button", {
+      cls: "codex-chat-quote-selection",
+      attr: { title: "加入引用（Ctrl/Cmd + Shift + Q）", "aria-label": "将选中文字加入引用" },
+    });
+    setIcon(this.quoteButton.createSpan(), "text-quote");
+    this.quoteButton.createSpan({ text: "加入引用" });
+    this.quoteButton.hidden = true;
+    this.quoteButton.addEventListener("mousedown", (event) => event.preventDefault());
+    this.quoteButton.addEventListener("click", () => this.quoteSelectedText());
+    this.registerDomEvent(this.contentEl.ownerDocument, "selectionchange", () => this.updateQuoteSelection());
+    this.registerDomEvent(this.messagesEl, "pointerdown", () => {
+      this.isSelectingQuote = true;
+      this.quoteButton.hidden = true;
+    });
+    this.registerDomEvent(this.contentEl.ownerDocument, "pointerup", () => {
+      this.isSelectingQuote = false;
+      this.updateQuoteSelection();
+    });
+    this.registerDomEvent(this.contentEl.ownerDocument, "pointercancel", () => {
+      this.isSelectingQuote = false;
+      this.hideQuoteSelection();
+    });
+    this.registerDomEvent(this.contentEl.ownerDocument, "scroll", () => this.positionQuoteSelection(), true);
+    this.registerDomEvent(this.contentEl.ownerDocument, "keydown", (event) => {
+      if (event.key === "Escape") this.hideQuoteSelection();
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === "q") {
+        this.updateQuoteSelection();
+        if (!this.selectedQuote) return;
+        event.preventDefault();
+        this.quoteSelectedText();
+      }
+    });
+    this.quoteStripEl = composer.createDiv({ cls: "codex-chat-draft-quotes" });
+    this.quoteStripEl.hidden = true;
+    this.quoteAnnouncementEl = composer.createDiv({
+      cls: "codex-chat-quote-announcement",
+      attr: { role: "status", "aria-live": "polite", "aria-atomic": "true" },
+    });
     composer.addEventListener("dragover", (event) => this.handleComposerDragOver(event));
     composer.addEventListener("dragleave", () => composer.removeClass("is-dragging-image"));
     composer.addEventListener("drop", (event) => void this.handleComposerDrop(event));
@@ -1989,29 +2030,218 @@ class AgentWorkspaceView extends ItemView {
       }),
     );
     window.requestAnimationFrame(() => this.syncStatusBarClearance());
+    const ownerWindow = this.contentEl.ownerDocument.defaultView;
+    const resizeObserver = new ownerWindow.ResizeObserver(() => {
+      this.syncStatusBarClearance();
+      this.positionQuoteSelection();
+    });
+    resizeObserver.observe(this.contentEl);
+    resizeObserver.observe(this.messagesEl);
+    const statusBar = this.contentEl.ownerDocument.querySelector(".status-bar");
+    if (statusBar) resizeObserver.observe(statusBar);
+    this.register(() => resizeObserver.disconnect());
+    // Status items can appear after the view opens, without a workspace resize.
+    this.registerInterval(ownerWindow.setInterval(() => this.syncStatusBarClearance(), 1000));
+  }
+
+  updateQuoteSelection() {
+    const selection = this.contentEl.ownerDocument.getSelection();
+    const bodyFor = (node) => (node?.nodeType === 1 ? node : node?.parentElement)?.closest(".codex-chat-message-body");
+    const start = bodyFor(selection?.anchorNode);
+    const end = bodyFor(selection?.focusNode);
+    if (!selection || selection.isCollapsed || selection.rangeCount !== 1 || !start || start !== end ||
+        !this.messagesEl.contains(start) || this.isSelectingQuote || this.isPreparingSend) {
+      this.hideQuoteSelection();
+      return;
+    }
+    const text = selection.toString().trim();
+    const messageId = start.closest(".codex-chat-message")?.getAttribute("data-message-id");
+    const messageIndex = this.messages.findIndex((message) => message.id === messageId);
+    if (!text || messageIndex < 0) {
+      this.hideQuoteSelection();
+      return;
+    }
+    const range = selection.getRangeAt(0).cloneRange();
+    const prefix = range.cloneRange();
+    prefix.selectNodeContents(start);
+    prefix.setEnd(range.startContainer, range.startOffset);
+    const offset = prefix.toString().length;
+    const message = this.messages[messageIndex];
+    const provider = this.plugin.getProvider(message.providerId || this.activeProviderId);
+    const author = message.role === "user" ? "你" : message.role === "assistant" ? provider?.shortLabel || "AI" : "提示";
+    this.selectedQuote = {
+      messageId, text, range, rangeText: range.toString(), offset,
+      source: `${author} · 消息 ${messageIndex + 1}`,
+    };
+    const duplicate = this.draftQuotes.some((quote) => this.isSameQuote(quote, this.selectedQuote));
+    this.quoteButton.disabled = duplicate;
+    this.quoteButton.lastElementChild.setText(duplicate ? "已加入引用" : "加入引用");
+    this.quoteButton.setAttr("aria-label", duplicate ? "该片段已加入引用" : "将选中文字加入引用");
+    this.positionQuoteSelection();
+  }
+
+  hideQuoteSelection() {
+    this.selectedQuote = null;
+    if (this.quoteButton) this.quoteButton.hidden = true;
+  }
+
+  isSameQuote(first, second) {
+    return first.messageId === second.messageId && first.offset === second.offset && first.text === second.text;
+  }
+
+  positionQuoteSelection() {
+    if (!this.quoteButton || !this.selectedQuote) return;
+    const viewport = this.messagesEl.getBoundingClientRect();
+    const rects = Array.from(this.selectedQuote.range.getClientRects());
+    const anchor = rects.filter((rect) => rect.width && rect.height && rect.bottom > viewport.top &&
+      rect.top < viewport.bottom && rect.right > viewport.left && rect.left < viewport.right).pop();
+    this.quoteButton.hidden = !anchor;
+    if (!anchor) return;
+    const root = this.contentEl.getBoundingClientRect();
+    // Obsidian extends HTMLElement.setCssProps; it does not export a standalone
+    // setCssProps function. Convert viewport rects to the positioned root's CSS
+    // pixels, including borders and any scaled pane, before writing variables.
+    const scaleX = root.width / this.contentEl.offsetWidth || 1;
+    const scaleY = root.height / this.contentEl.offsetHeight || 1;
+    const originX = root.left + (this.contentEl.clientLeft - this.contentEl.scrollLeft) * scaleX;
+    const originY = root.top + (this.contentEl.clientTop - this.contentEl.scrollTop) * scaleY;
+    const width = this.quoteButton.offsetWidth;
+    const height = this.quoteButton.offsetHeight;
+    const minLeft = (viewport.left - originX) / scaleX + 8;
+    const maxLeft = (viewport.right - originX) / scaleX - width - 8;
+    const minTop = (viewport.top - originY) / scaleY;
+    const maxTop = (viewport.bottom - originY) / scaleY - height;
+    if (maxLeft < minLeft || maxTop < minTop) {
+      this.quoteButton.hidden = true;
+      return;
+    }
+    const left = Math.max(minLeft, Math.min((anchor.right - originX) / scaleX + 6, maxLeft));
+    const above = (anchor.top - originY) / scaleY - height - 7;
+    const top = above >= minTop ? above : (anchor.bottom - originY) / scaleY + 7;
+    this.quoteButton.setCssProps({
+      "--quote-left": `${left}px`,
+      "--quote-top": `${Math.max(minTop, Math.min(top, maxTop))}px`,
+    });
+  }
+
+  quoteSelectedText() {
+    const quote = this.selectedQuote;
+    if (!quote || this.isPreparingSend || this.draftQuotes.some((item) => this.isSameQuote(item, quote))) return;
+    // Snapshot the text, not the message: streaming may replace its DOM later.
+    this.draftQuotes.push({ ...quote, id: createMessageId() });
+    this.contentEl.ownerDocument.getSelection()?.removeAllRanges();
+    this.hideQuoteSelection();
+    this.renderDraftQuotes();
+    this.syncQuoteHighlights();
+    this.quoteAnnouncementEl.setText(`已加入 ${this.draftQuotes.length} 处引用，可继续选中文字`);
+    // Keep reading position and focus instead of jumping to the composer.
+    this.updateReferenceHint();
+  }
+
+  renderDraftQuotes() {
+    if (!this.quoteStripEl) return;
+    this.quoteStripEl.empty();
+    this.quoteStripEl.hidden = !this.draftQuotes.length;
+    if (!this.draftQuotes.length) return;
+    const header = this.quoteStripEl.createDiv({ cls: "codex-chat-quotes-header" });
+    header.createSpan({ text: `引用 ${this.draftQuotes.length} 处` });
+    header.createSpan({ cls: "codex-chat-quotes-help", text: "可继续选取" });
+    const clear = header.createEl("button", { text: "清空", attr: { "aria-label": "清空所有引用" } });
+    clear.addEventListener("click", () => {
+      this.clearDraftQuotes();
+      this.inputEl.focus();
+    });
+    const list = this.quoteStripEl.createDiv({ cls: "codex-chat-quotes-list" });
+    this.draftQuotes.forEach((quote, index) => {
+      const card = list.createDiv({ cls: "codex-chat-quote-card" });
+      const details = card.createEl("details");
+      const summary = details.createEl("summary", { attr: { "aria-label": `展开引用 ${index + 1}：${quote.source}` } });
+      summary.createSpan({ cls: "codex-chat-quote-source", text: `${index + 1} · ${quote.source}` });
+      summary.createSpan({ cls: "codex-chat-quote-preview", text: quote.text });
+      details.createDiv({ cls: "codex-chat-quote-full", text: quote.text });
+      const remove = card.createEl("button", {
+        cls: "clickable-icon codex-chat-quote-remove",
+        attr: { "aria-label": `移除引用 ${index + 1}`, title: "移除这处引用" },
+      });
+      setIcon(remove, "x");
+      remove.addEventListener("click", () => {
+        this.removeDraftQuote(quote.id);
+        const buttons = this.quoteStripEl.querySelectorAll(".codex-chat-quote-remove");
+        (buttons[Math.min(index, buttons.length - 1)] || this.inputEl).focus();
+      });
+    });
+  }
+
+  removeDraftQuote(id) {
+    this.draftQuotes = this.draftQuotes.filter((quote) => quote.id !== id);
+    this.renderDraftQuotes();
+    this.syncQuoteHighlights();
+    this.updateQuoteSelection();
+    this.updateReferenceHint();
+    this.quoteAnnouncementEl?.setText(`剩余 ${this.draftQuotes.length} 处引用`);
+  }
+
+  clearDraftQuotes() {
+    this.draftQuotes = [];
+    this.hideQuoteSelection();
+    this.renderDraftQuotes();
+    this.syncQuoteHighlights();
+    this.updateReferenceHint();
+    this.quoteAnnouncementEl?.setText("");
+  }
+
+  syncQuoteHighlights() {
+    const ownerWindow = this.contentEl.ownerDocument.defaultView;
+    const registry = ownerWindow.CSS?.highlights;
+    if (!registry || !ownerWindow.Highlight) return;
+    const name = "codex-chat-quotes";
+    let highlight = registry.get(name);
+    if (!highlight) highlight = new ownerWindow.Highlight();
+    // A document can host several workspace views; remove only our own ranges.
+    for (const range of this.quoteHighlightRanges) highlight.delete(range);
+    this.quoteHighlightRanges.clear();
+    for (const quote of this.draftQuotes) {
+      if (!quote.range || !this.messagesEl.contains(quote.range.commonAncestorContainer) ||
+          quote.range.toString() !== quote.rangeText) continue;
+      highlight.add(quote.range);
+      this.quoteHighlightRanges.add(quote.range);
+    }
+    if (highlight.size) registry.set(name, highlight);
+    else registry.delete(name);
+  }
+
+  buildQuotedRequest(userText) {
+    if (!this.draftQuotes.length) return userText;
+    const excerpts = this.draftQuotes.map((quote, index) => {
+      const lines = quote.text.split(/\r?\n/).map((line) => `> ${line}`).join("\n");
+      return `引用 ${index + 1}（${quote.source}）：\n${lines}`;
+    });
+    return `${excerpts.join("\n\n")}\n\n${userText || "请针对以上引用内容进行分析。"}`;
   }
 
   async onClose() {
+    this.isClosed = true;
+    this.clearDraftQuotes();
     await this.stop(false);
     this.contentEl.style.removeProperty("--codex-chat-status-bar-clearance");
   }
 
   syncStatusBarClearance() {
     const statusBar = this.contentEl.ownerDocument.querySelector(".status-bar");
-    if (!(statusBar instanceof HTMLElement)) {
-      setCssProps(this.contentEl, { "--codex-chat-status-bar-clearance": "0px" });
+    if (!statusBar) {
+      this.contentEl.setCssProps({ "--codex-chat-status-bar-clearance": "0px" });
       return;
     }
 
     const contentRect = this.contentEl.getBoundingClientRect();
     const statusRect = statusBar.getBoundingClientRect();
-    const style = getComputedStyle(statusBar);
+    const style = this.contentEl.ownerDocument.defaultView.getComputedStyle(statusBar);
     const hidden =
       style.display === "none" || style.visibility === "hidden" || Number.parseFloat(style.opacity) === 0;
     const horizontallyOverlaps = contentRect.left < statusRect.right && contentRect.right > statusRect.left;
     const overlap = hidden || !horizontallyOverlaps ? 0 : contentRect.bottom - statusRect.top;
-    const clearance = Math.max(0, Math.ceil(overlap));
-    setCssProps(this.contentEl, { "--codex-chat-status-bar-clearance": `${clearance}px` });
+    const clearance = Math.max(0, Math.min(Math.ceil(overlap), Math.ceil(statusRect.height))) + (overlap > 0 ? 8 : 0);
+    this.contentEl.setCssProps({ "--codex-chat-status-bar-clearance": `${clearance}px` });
   }
 
   provider() {
@@ -2019,7 +2249,7 @@ class AgentWorkspaceView extends ItemView {
   }
 
   isRunning() {
-    return Boolean(this.child || (this.run && this.run.running));
+    return Boolean(this.isPreparingSend || this.child || (this.run && this.run.running));
   }
 
   populateProviderSelect() {
@@ -2079,6 +2309,7 @@ class AgentWorkspaceView extends ItemView {
       return;
     }
     if (!this.plugin.getProvider(providerId)) return;
+    this.clearDraftQuotes();
     this.clearDraftAttachments();
     this.draftRevisionOf = null;
     this.activeProviderId = providerId;
@@ -2286,16 +2517,18 @@ class AgentWorkspaceView extends ItemView {
     if (!this.hintEl) return;
     const matches = this.inputEl ? this.inputEl.value.match(/!?\[\[[^\]]+\]\]/g) || [] : [];
     const imageCount = this.draftAttachments.length;
-    const provider = this.provider();
-    const model = this.plugin.getModelLabel(provider, this.plugin.settings.models[this.activeProviderId]);
     const attachments = [
+      this.draftQuotes.length ? `${this.draftQuotes.length} 处对话引用` : "",
       imageCount ? `${imageCount} 张图片` : "",
       matches.length ? `${matches.length} 篇引用笔记` : "",
     ].filter(Boolean);
-    this.hintEl.setText(attachments.length ? `将附加 ${attachments.join(" · ")}` : `${provider.shortLabel} · ${model}`);
+    this.hintEl.setText(attachments.length ? `将附加 ${attachments.join(" · ")}` : "");
   }
 
   renderHistory() {
+    this.hideQuoteSelection();
+    for (const quote of this.draftQuotes) quote.range = null;
+    this.syncQuoteHighlights();
     this.messagesEl.empty();
     this.messageRows.clear();
     this.renderBranchBanner();
@@ -2340,6 +2573,7 @@ class AgentWorkspaceView extends ItemView {
     const kind = MESSAGE_KINDS.has(message.kind) ? message.kind : "message";
     const row = this.messagesEl.createDiv({
       cls: `codex-chat-message is-${message.role} kind-${kind} status-${message.status || "completed"}`,
+      attr: { "data-message-id": message.id },
     });
     const meta = row.createDiv({ cls: "codex-chat-message-meta" });
     let statusBadge = null;
@@ -2414,6 +2648,11 @@ class AgentWorkspaceView extends ItemView {
   }
 
   renderMessageBody(message, body, streaming = false) {
+    if (this.selectedQuote?.messageId === message.id) this.hideQuoteSelection();
+    for (const quote of this.draftQuotes) {
+      if (quote.messageId === message.id) quote.range = null;
+    }
+    this.syncQuoteHighlights();
     body.empty();
     const kind = MESSAGE_KINDS.has(message.kind) ? message.kind : "message";
     if (kind !== "message") {
@@ -2517,6 +2756,7 @@ class AgentWorkspaceView extends ItemView {
     await this.plugin.saveConversation(this.activeProviderId, this.messages);
     const branch = await this.plugin.createConversationBranch(this.activeProviderId, message.id, mode);
     this.messages = cleanHistory(branch.messages, this.activeProviderId);
+    this.clearDraftQuotes();
     this.clearDraftAttachments();
     this.renderModelSelect();
     this.renderHistory();
@@ -2610,9 +2850,29 @@ class AgentWorkspaceView extends ItemView {
   }
 
   async send() {
-    const userText = this.inputEl.value.trim();
+    if (this.isRunning() || this.isClosed) return;
+    // Lock the draft across asynchronous note lookup so newly selected excerpts
+    // cannot be cleared by an earlier send, or sent twice by repeated Enter.
+    this.isPreparingSend = true;
+    this.sendPreparationCancelled = false;
+    this.hideQuoteSelection();
+    this.quoteStripEl.inert = true;
+    this.setRunning(true);
+    try {
+      await this.sendDraft();
+    } catch (error) {
+      new Notice(`发送失败：${shortError(error)}`);
+    } finally {
+      this.isPreparingSend = false;
+      this.quoteStripEl.inert = false;
+      if (!this.isRunning()) this.setRunning(false);
+    }
+  }
+
+  async sendDraft() {
+    const userText = this.buildQuotedRequest(this.inputEl.value.trim());
     const attachments = cleanAttachments(this.draftAttachments);
-    if ((!userText && !attachments.length) || this.isRunning()) return;
+    if (!userText && !attachments.length) return;
     if (this.isImportingAttachments) {
       new Notice("图片正在导入，请稍候再发送");
       return;
@@ -2652,6 +2912,7 @@ class AgentWorkspaceView extends ItemView {
       baseContext.notePath,
       Math.max(0, this.plugin.settings.maxContextChars - currentContextChars),
     );
+    if (this.sendPreparationCancelled || this.isClosed) return;
     const userMessage = {
       id: createMessageId(),
       providerTurnId: null,
@@ -2670,10 +2931,12 @@ class AgentWorkspaceView extends ItemView {
     this.appendMessage(userMessage);
     this.inputEl.value = "";
     this.draftRevisionOf = null;
+    this.clearDraftQuotes();
     this.clearDraftAttachments();
     await this.plugin.saveConversation(this.activeProviderId, this.messages);
     this.updateConversationChrome();
 
+    if (this.sendPreparationCancelled || this.isClosed) return;
     const prompt = this.plugin.buildPrompt(requestText, baseContext);
     const cliPrompt = cliRunOptions.compatibleHistory
       ? buildCompatibleConversationPrompt(cliRunOptions.compatibleHistory, prompt)
@@ -3349,6 +3612,10 @@ class AgentWorkspaceView extends ItemView {
 
   async stop(showMessage = true) {
     if (!this.isRunning()) return;
+    if (this.isPreparingSend && !this.child && !this.run?.running) {
+      this.sendPreparationCancelled = true;
+      return;
+    }
     const run = this.run;
     if (run && run.backend === "app-server") {
       if (run.stopRequested) return;
@@ -3389,6 +3656,7 @@ class AgentWorkspaceView extends ItemView {
       new Notice("请先停止当前回答");
       return;
     }
+    this.clearDraftQuotes();
     this.clearDraftAttachments();
     this.draftRevisionOf = null;
     await this.plugin.saveConversation(this.activeProviderId, this.messages);
@@ -3412,6 +3680,7 @@ class AgentWorkspaceView extends ItemView {
       if (this.inputEl) this.inputEl.focus();
       return;
     }
+    this.clearDraftQuotes();
     this.clearDraftAttachments();
     this.draftRevisionOf = null;
     await this.plugin.saveConversation(this.activeProviderId, this.messages);

@@ -68,7 +68,17 @@ AI Workspace contains no client-side telemetry, advertising, or self-update mech
 
 ## Per-turn model switching
 
+Model and permission controls sit above the composer. The composer reserves space for Obsidian's status bar as its size changes.
+
 The model selector applies to the next turn instead of the entire conversation. The selected provider and model are captured when a message is sent and stored on the messages created by that turn. Providers that cannot safely switch models in an existing thread start a compatible local thread with the visible conversation history injected.
+
+## Quote multiple excerpts
+
+Select text within a conversation message and use “加入引用” at the upper-right of the selection's last visible line (or Ctrl/Cmd + Shift + Q). The button stays within the message viewport, shifting left near the right edge or below the selection when there is no space above. Repeat on other passages or messages to collect multiple excerpts; no modifier key is required while selecting. Added passages retain a subtle highlight where the browser supports CSS highlights.
+
+The composer displays a compact quote list with source labels, expandable previews, individual removal, and “清空”. Your question remains separate in the input. Sending combines the ordered excerpts and your question as Markdown, so the provider, saved history, and conversation sync receive the same text. Quotes alone can also be sent. Re-adding the same passage from the same message does not duplicate it; identical text from different messages is kept.
+
+Quotes are temporary draft state: switching provider/conversation, editing or forking a message, and closing the view clear the list. Validation failures before sending retain it. Highlights are optional presentation only; stored text snapshots stay intact if streaming or history refresh replaces the source DOM. Selection is confined to one message at a time to avoid collecting message controls or metadata.
 
 ## Development
 
@@ -80,6 +90,8 @@ npm run release:check
 ```
 
 `main.js` is the self-contained runtime loaded by Obsidian. The smaller domain modules remain independently testable and must not be reintroduced as runtime-relative CommonJS dependencies without adding a bundling step.
+
+For local quote UI checks, run `node test/quote-ui-preview.js` and open its loopback URL. This fixture loads the real view and stylesheet with a minimal Obsidian host; it never invokes a provider or reads Vault data. Browser artifacts belong in the ignored `output/playwright/` directory.
 
 See [RELEASING.md](RELEASING.md) for the public-release gates and version workflow. Security reports should follow [SECURITY.md](SECURITY.md).
 

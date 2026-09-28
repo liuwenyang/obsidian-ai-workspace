@@ -13,6 +13,7 @@ secrets.json
 # Dependencies, generated output, and machine noise.
 node_modules/
 coverage/
+output/playwright/
 dist/
 *.log
 .DS_Store

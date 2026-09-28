@@ -9,7 +9,7 @@
     "check": "node --check main.js && node --check codex-app-server-client.js && node --check conversation-utils.js && node --check attachment-utils.js && node --check conversation-sync-utils.js",
     "lint": "eslint .",
     "release:check": "node scripts/validate-release.mjs",
-    "test": "npm run check && node test/codex-chat-app-server-client.test.js && node test/codex-chat-conversation-domain.test.js && node test/codex-chat-image-attachments.test.js && node test/codex-chat-image-integration.test.js && node test/codex-chat-conversation-sync.test.js && node test/codex-chat-conversation-sync-integration.test.js",
+    "test": "npm run check && node test/codex-chat-app-server-client.test.js && node test/codex-chat-conversation-domain.test.js && node test/codex-chat-image-attachments.test.js && node test/codex-chat-image-integration.test.js && node test/codex-chat-conversation-sync.test.js && node test/codex-chat-conversation-sync-integration.test.js && node test/codex-chat-quotes.test.js",
     "verify": "npm test && npm run lint && npm run release:check"
   },
   "engines": {
