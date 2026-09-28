@@ -116,7 +116,17 @@ function buildCodexTurnStartParams({ threadId, prompt, imagePaths, userMessageId
   };
   const selectedModel = typeof model === "string" ? model : settings && settings.models && settings.models.codex;
   if (selectedModel) params.model = selectedModel;
+  const effort = settings && settings.efforts && settings.efforts.codex;
+  if (typeof effort === "string" && effort) params.effort = effort;
+  if (settings && settings.codexFastMode) params.serviceTier = "priority";
   return params;
+}
+
+const STALE_CODEX_THREAD_PATTERN = /paginated_threads is not supported|no rollout found|thread not found|thread_not_found/i;
+
+function isStaleCodexThreadError(error) {
+  const text = error instanceof Error ? error.message : String(error || "");
+  return STALE_CODEX_THREAD_PATTERN.test(text);
 }
 
 function buildInjectedHistoryItems(messages) {
@@ -674,6 +684,7 @@ module.exports = {
   buildCodexThreadStartParams,
   buildCodexTurnStartParams,
   buildInjectedHistoryItems,
+  isStaleCodexThreadError,
   mapCodexTurnsToMessages,
   parseCodexAppServerNotification,
   describeCodexTimelineItem,

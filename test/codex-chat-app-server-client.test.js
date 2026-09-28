@@ -12,6 +12,7 @@ const {
   describeCodexTimelineItem,
   describeCodexApprovalRequest,
   prepareSpawnInvocation,
+  isStaleCodexThreadError,
 } = require("../codex-app-server-client");
 
 const windowsNpmRoot = "C:\\Users\\tester\\AppData\\Roaming\\npm";
@@ -92,6 +93,28 @@ const switchedTurnParams = buildCodexTurnStartParams({
   vaultPath: "C:/vault",
 });
 assert.strictEqual(switchedTurnParams.model, "gpt-turn-snapshot");
+assert.strictEqual(switchedTurnParams.effort, undefined, "no effort is sent unless configured");
+assert.strictEqual(switchedTurnParams.serviceTier, undefined, "no service tier is sent unless fast mode is on");
+
+const speedTurnParams = buildCodexTurnStartParams({
+  threadId: "thread-1",
+  prompt: "快一点",
+  imagePaths: [],
+  userMessageId: "message-3",
+  settings: { allowEdits: false, models: { codex: "" }, efforts: { codex: "low" }, codexFastMode: true },
+  vaultPath: "C:/vault",
+});
+assert.strictEqual(speedTurnParams.effort, "low");
+assert.strictEqual(speedTurnParams.serviceTier, "priority");
+
+assert.strictEqual(
+  isStaleCodexThreadError(new Error("thread/resume: thread/resume failed: paginated_threads is not supported yet (code -32601)")),
+  true,
+  "paginated threads written by a newer Codex must be treated as stale",
+);
+assert.strictEqual(isStaleCodexThreadError(new Error("no rollout found for thread id abc")), true);
+assert.strictEqual(isStaleCodexThreadError(new Error("Codex app-server 请求超时：thread/resume")), false);
+assert.strictEqual(isStaleCodexThreadError(null), false);
 
 assert.deepStrictEqual(
   buildInjectedHistoryItems([

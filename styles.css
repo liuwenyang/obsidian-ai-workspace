@@ -140,10 +140,56 @@
 }
 
 .codex-chat-context-button {
-  flex: 1;
+  flex: 0 1 auto;
+  max-width: min(320px, 48%);
   gap: 5px;
   overflow: hidden;
   white-space: nowrap;
+}
+
+.codex-chat-effort-select {
+  flex: none;
+  width: 72px;
+  height: 28px;
+  padding: 2px 22px 2px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 14px;
+  background-color: var(--background-primary);
+  color: var(--text-normal);
+  font-size: 11px;
+  box-shadow: none;
+}
+
+.codex-chat-fast-toggle {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  min-height: 28px;
+  padding: 3px 9px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 14px;
+  background: var(--background-primary);
+  color: var(--text-muted);
+  font-size: 11px;
+  box-shadow: none;
+}
+
+.codex-chat-fast-toggle svg {
+  width: 13px;
+  height: 13px;
+}
+
+.codex-chat-fast-toggle.is-on {
+  border-color: var(--color-orange);
+  background: color-mix(in srgb, var(--color-orange) 18%, var(--background-primary));
+  color: var(--color-orange);
+}
+
+.codex-chat-fast-toggle:disabled,
+.codex-chat-effort-select:disabled {
+  opacity: 0.6;
 }
 
 .codex-chat-context-button svg,
@@ -164,6 +210,7 @@
 .codex-chat-permission {
   flex: none;
   gap: 4px;
+  margin-left: auto;
 }
 
 .codex-chat-permission.is-write {
@@ -1077,6 +1124,12 @@
 
   .codex-chat-context-button {
     flex-basis: 100%;
+    max-width: none;
+  }
+
+  .codex-chat-effort-select,
+  .codex-chat-fast-toggle {
+    order: 2;
   }
 
   .codex-chat-history-toolbar {

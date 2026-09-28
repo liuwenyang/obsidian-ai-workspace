@@ -334,7 +334,17 @@ function buildCodexTurnStartParams({ threadId, prompt, imagePaths, userMessageId
   };
   const selectedModel = typeof model === "string" ? model : settings && settings.models && settings.models.codex;
   if (selectedModel) params.model = selectedModel;
+  const effort = settings && settings.efforts && settings.efforts.codex;
+  if (typeof effort === "string" && effort) params.effort = effort;
+  if (settings && settings.codexFastMode) params.serviceTier = "priority";
   return params;
+}
+
+const STALE_CODEX_THREAD_PATTERN = /paginated_threads is not supported|no rollout found|thread not found|thread_not_found/i;
+
+function isStaleCodexThreadError(error) {
+  const text = error instanceof Error ? error.message : String(error || "");
+  return STALE_CODEX_THREAD_PATTERN.test(text);
 }
 
 function buildInjectedHistoryItems(messages) {
@@ -856,6 +866,65 @@ const CLAUDE_MODELS = [
   { value: "fable", label: "Fable" },
 ];
 
+const CLAUDE_EFFORTS = [
+  { value: "", label: "默认" },
+  { value: "low", label: "低" },
+  { value: "medium", label: "中" },
+  { value: "high", label: "高" },
+  { value: "xhigh", label: "超高" },
+  { value: "max", label: "最大" },
+];
+const CODEX_EFFORT_FALLBACK = ["low", "medium", "high", "xhigh"];
+const CODEX_EFFORT_LABELS = {
+  none: "无",
+  minimal: "极低",
+  low: "低",
+  medium: "中",
+  high: "高",
+  xhigh: "超高",
+  max: "最大",
+  ultra: "Ultra",
+};
+
+let codexModelsCacheMemo = { file: "", mtimeMs: 0, models: [] };
+
+function readCodexModelsCache() {
+  const configuredHome = process.env.CODEX_HOME;
+  const codexHome = configuredHome ? path.resolve(configuredHome) : path.join(os.homedir(), ".codex");
+  const file = path.join(codexHome, "models_cache.json");
+  const mtimeMs = fs.statSync(file).mtimeMs;
+  if (codexModelsCacheMemo.file === file && codexModelsCacheMemo.mtimeMs === mtimeMs) return codexModelsCacheMemo.models;
+  const cache = JSON.parse(fs.readFileSync(file, "utf8"));
+  const models = Array.isArray(cache.models) ? cache.models : [];
+  codexModelsCacheMemo = { file, mtimeMs, models };
+  return models;
+}
+
+function loadCodexEffortOptions(selectedModel = "") {
+  let levels = [];
+  let fastTier = null;
+  try {
+    const models = readCodexModelsCache();
+    const match = models.find((model) => model && model.slug === selectedModel) ||
+      models.find((model) => model && model.visibility === "list");
+    if (match) {
+      levels = (Array.isArray(match.supported_reasoning_levels) ? match.supported_reasoning_levels : [])
+        .map((level) => (level && typeof level.effort === "string" ? level.effort : ""))
+        .filter(Boolean);
+      const tiers = Array.isArray(match.service_tiers) ? match.service_tiers : [];
+      fastTier = tiers.find((tier) => tier && tier.id === "priority") || null;
+    }
+  } catch {
+    // The cache appears after the first Codex login; fall back to the generic ladder.
+  }
+  if (!levels.length) levels = CODEX_EFFORT_FALLBACK;
+  const options = [{ value: "", label: "默认", description: "使用 Codex 默认思考深度" }];
+  for (const level of levels) {
+    options.push({ value: level, label: CODEX_EFFORT_LABELS[level] || level, description: level });
+  }
+  return { options, fastTier };
+}
+
 function existingPath(candidates) {
   for (const candidate of candidates) {
     const resolved = resolveExecutableCommand(candidate);
@@ -887,12 +956,7 @@ function configuredAvailable(configured, candidates, commandName, assumePath = f
 function loadCodexModels(selectedModel = "") {
   const models = [CODEX_AUTO_MODEL];
   try {
-    const configuredHome = process.env.CODEX_HOME;
-    const codexHome = configuredHome
-      ? path.resolve(configuredHome)
-      : path.join(os.homedir(), ".codex");
-    const cache = JSON.parse(fs.readFileSync(path.join(codexHome, "models_cache.json"), "utf8"));
-    for (const model of Array.isArray(cache.models) ? cache.models : []) {
+    for (const model of readCodexModelsCache()) {
       if (!model || model.visibility !== "list" || typeof model.slug !== "string") continue;
       models.push({
         value: model.slug,
@@ -987,6 +1051,8 @@ function claudeArgs(settings, providerId, runOptions = {}) {
   args.push("--permission-mode", settings.allowEdits ? "acceptEdits" : "plan");
   const model = typeof runOptions.model === "string" ? runOptions.model : settings.models[providerId];
   if (model) args.push("--model", model);
+  const effort = settings.efforts && settings.efforts[providerId];
+  if (typeof effort === "string" && effort) args.push("--effort", effort);
   const sessionId = Object.prototype.hasOwnProperty.call(runOptions, "sessionId")
     ? runOptions.sessionId
     : settings.sessions[providerId];
@@ -1019,6 +1085,8 @@ function createProviderRegistry(settings, vaultPath) {
       buildArgs: (imagePaths = [], runOptions = {}) => {
         const selectedModel = typeof runOptions.model === "string" ? runOptions.model : settings.models.codex;
         const model = selectedModel ? ["--model", selectedModel] : [];
+        const effort = settings.efforts && settings.efforts.codex;
+        if (typeof effort === "string" && effort) model.push("--config", `model_reasoning_effort="${effort}"`);
         const imageArgs = buildCodexImageArgs(imagePaths);
         if (settings.sessions.codex) {
           const sandboxMode = settings.allowEdits ? "workspace-write" : "read-only";
@@ -1108,6 +1176,8 @@ const DEFAULT_SETTINGS = {
   reclaudePath: "",
   claudePath: "",
   models: { codex: "", reclaude: "sonnet", claude: "sonnet" },
+  efforts: { codex: "", reclaude: "", claude: "" },
+  codexFastMode: false,
   maxContextChars: 60000,
   includeCurrentNote: true,
   allowEdits: false,
@@ -1659,6 +1729,11 @@ function normalizeSettings(loaded) {
   const histories = { ...DEFAULT_SETTINGS.histories, ...(loaded.histories || {}) };
   const sessions = { ...DEFAULT_SETTINGS.sessions, ...(loaded.sessions || {}) };
   const models = { ...DEFAULT_SETTINGS.models, ...(loaded.models || {}) };
+  const efforts = { ...DEFAULT_SETTINGS.efforts };
+  for (const id of PROVIDER_IDS) {
+    const value = loaded.efforts && loaded.efforts[id];
+    efforts[id] = typeof value === "string" ? value : "";
+  }
   const conversations = { ...DEFAULT_SETTINGS.conversations };
   const activeConversationIds = {
     ...DEFAULT_SETTINGS.activeConversationIds,
@@ -1701,6 +1776,8 @@ function normalizeSettings(loaded) {
     syncConversations: loaded.syncConversations !== false,
     conversationSyncFolder: normalizeConversationSyncFolder(loaded.conversationSyncFolder),
     models,
+    efforts,
+    codexFastMode: loaded.codexFastMode === true,
     sessions,
     histories,
     conversations,
@@ -1909,6 +1986,18 @@ class AgentWorkspaceView extends ItemView {
       attr: { "aria-label": "选择模型" },
     });
     this.modelSelect.addEventListener("change", () => void this.changeModel(this.modelSelect.value));
+
+    this.effortSelect = this.contextBar.createEl("select", {
+      cls: "codex-chat-effort-select dropdown",
+      attr: { "aria-label": "选择思考深度" },
+    });
+    this.effortSelect.addEventListener("change", () => void this.changeEffort(this.effortSelect.value));
+
+    this.fastButton = this.contextBar.createEl("button", {
+      cls: "codex-chat-fast-toggle",
+      attr: { "aria-label": "切换 Codex 快速模式", type: "button" },
+    });
+    this.fastButton.addEventListener("click", () => void this.toggleFastMode());
 
     this.contextButton = this.contextBar.createEl("button", { cls: "codex-chat-context-button" });
     this.contextButton.addEventListener("click", () => {
@@ -2273,6 +2362,65 @@ class AgentWorkspaceView extends ItemView {
     this.modelSelect.value = this.plugin.settings.models[this.activeProviderId] || "";
     this.modelSelect.toggleClass("is-single", provider.models.length <= 1);
     this.updateModelTitle();
+    this.renderSpeedControls();
+  }
+
+  renderSpeedControls() {
+    if (!this.effortSelect || !this.fastButton) return;
+    const providerId = this.activeProviderId;
+    const current = (this.plugin.settings.efforts && this.plugin.settings.efforts[providerId]) || "";
+    let options = CLAUDE_EFFORTS;
+    let fastTier = null;
+    if (providerId === "codex") {
+      const loaded = loadCodexEffortOptions(this.plugin.settings.models.codex || "");
+      options = loaded.options;
+      fastTier = loaded.fastTier;
+    }
+    this.effortSelect.empty();
+    for (const option of options) {
+      this.effortSelect.createEl("option", {
+        value: option.value,
+        text: option.label,
+        attr: option.description ? { title: option.description } : {},
+      });
+    }
+    if (current && !options.some((option) => option.value === current)) {
+      this.plugin.settings.efforts[providerId] = "";
+      void this.plugin.persist();
+      new Notice(`当前模型不支持思考深度「${current}」，已恢复为默认`);
+    }
+    this.effortSelect.value = this.plugin.settings.efforts[providerId] || "";
+    this.effortSelect.setAttr("title", "思考深度：越低越快，越高越深入；下一条消息生效");
+
+    const fastAvailable = providerId === "codex";
+    this.fastButton.hidden = !fastAvailable;
+    if (fastAvailable) {
+      const enabled = Boolean(this.plugin.settings.codexFastMode);
+      this.fastButton.empty();
+      setIcon(this.fastButton.createSpan(), "zap");
+      this.fastButton.createSpan({ text: "快速" });
+      this.fastButton.toggleClass("is-on", enabled);
+      this.fastButton.setAttr("aria-pressed", String(enabled));
+      const detail = fastTier && fastTier.description ? `（${fastTier.description}）` : "";
+      this.fastButton.setAttr("title", `${enabled ? "已开启" : "开启"} Codex 快速模式${detail}；下一条消息生效`);
+    }
+  }
+
+  async changeEffort(value) {
+    const providerId = this.activeProviderId;
+    if (!this.plugin.settings.efforts) this.plugin.settings.efforts = { codex: "", reclaude: "", claude: "" };
+    this.plugin.settings.efforts[providerId] = typeof value === "string" ? value : "";
+    const label = this.effortSelect.selectedOptions[0] ? this.effortSelect.selectedOptions[0].text : "默认";
+    await this.plugin.persist();
+    this.plugin.refreshViews();
+    new Notice(`思考深度已设为「${label}」；下一条消息生效`);
+  }
+
+  async toggleFastMode() {
+    this.plugin.settings.codexFastMode = !this.plugin.settings.codexFastMode;
+    await this.plugin.persist();
+    this.plugin.refreshViews();
+    new Notice(this.plugin.settings.codexFastMode ? "Codex 快速模式已开启；下一条消息生效" : "Codex 快速模式已关闭；下一条消息生效");
   }
 
   updateModelTitle() {
@@ -2825,6 +2973,8 @@ class AgentWorkspaceView extends ItemView {
     if (this.imageInput) this.imageInput.disabled = running || this.isImportingAttachments;
     this.providerSelect.disabled = running;
     this.modelSelect.disabled = running;
+    if (this.effortSelect) this.effortSelect.disabled = running;
+    if (this.fastButton) this.fastButton.disabled = running;
     if (this.historyButton) this.historyButton.disabled = running;
     this.stopButton.hidden = !running;
     this.statusEl.setText(text);
@@ -4152,6 +4302,20 @@ module.exports = class AgentWorkspacePlugin extends Plugin {
     return conversation;
   }
 
+  async detachStaleCodexThread(conversation, error) {
+    const staleId = conversation.providerThreadId || conversation.sessionId;
+    if (staleId) this.codexLoadedThreads.delete(staleId);
+    conversation.providerThreadId = null;
+    conversation.sessionId = null;
+    conversation.providerThreadModel = "";
+    conversation.branchKind = conversation.messages.length ? "compatible" : "";
+    conversation.updatedAt = Date.now();
+    this.storeConversation("codex", conversation);
+    if (this.settings.activeConversationIds.codex === conversation.id) this.syncActiveConversationState("codex");
+    await this.persist();
+    new Notice(`Codex 无法恢复原线程（${shortError(error)}），已携带历史新建线程`);
+  }
+
   async startCodexThread(client, model = "") {
     const result = await client.request(
       "thread/start",
@@ -4168,21 +4332,30 @@ module.exports = class AgentWorkspacePlugin extends Plugin {
     const existingThreadId = conversation.providerThreadId || conversation.sessionId;
     if (existingThreadId) {
       let runtimeModel = conversation.providerThreadModel || "";
+      let stale = false;
       if (!this.codexLoadedThreads.has(existingThreadId)) {
-        const result = await client.request("thread/resume", { threadId: existingThreadId });
-        if (!result || !result.thread) throw new Error("Codex 恢复线程失败");
-        runtimeModel = result.model || runtimeModel;
-        await this.updateConversationFromCodexThread(
-          conversation.id,
-          result.thread,
-          conversation.branchKind,
-          runtimeModel,
-        );
+        try {
+          const result = await client.request("thread/resume", { threadId: existingThreadId });
+          if (!result || !result.thread) throw new Error("Codex 恢复线程失败");
+          runtimeModel = result.model || runtimeModel;
+          await this.updateConversationFromCodexThread(
+            conversation.id,
+            result.thread,
+            conversation.branchKind,
+            runtimeModel,
+          );
+        } catch (error) {
+          if (!isStaleCodexThreadError(error)) throw error;
+          stale = true;
+          await this.detachStaleCodexThread(conversation, error);
+        }
       }
-      return {
-        threadId: existingThreadId,
-        model: selectedModel || runtimeModel,
-      };
+      if (!stale) {
+        return {
+          threadId: existingThreadId,
+          model: selectedModel || runtimeModel,
+        };
+      }
     }
 
     let thread;
@@ -4194,11 +4367,20 @@ module.exports = class AgentWorkspacePlugin extends Plugin {
       const lastTurnId = parent
         ? providerForkTurnId(parent.messages, conversation.forkedFromMessageId, conversation.forkMode)
         : null;
+      let forked = null;
       if (parentThreadId && lastTurnId) {
-        const result = await client.request("thread/fork", { threadId: parentThreadId, lastTurnId });
-        if (!result || !result.thread) throw new Error("Codex 分叉线程失败");
-        thread = result.thread;
-        resolvedModel = resolvedModel || result.model || "";
+        try {
+          forked = await client.request("thread/fork", { threadId: parentThreadId, lastTurnId });
+          if (!forked || !forked.thread) throw new Error("Codex 分叉线程失败");
+        } catch (error) {
+          if (!isStaleCodexThreadError(error)) throw error;
+          forked = null;
+          new Notice("父会话在 Codex 中已不可分叉，改为携带历史新建线程");
+        }
+      }
+      if (forked) {
+        thread = forked.thread;
+        resolvedModel = resolvedModel || forked.model || "";
         branchKind = "native";
       } else {
         const result = await this.startCodexThread(client, selectedModel);
@@ -4657,7 +4839,10 @@ module.exports = class AgentWorkspacePlugin extends Plugin {
 
   refreshViews() {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
-      if (leaf.view instanceof AgentWorkspaceView) leaf.view.updateContextBar();
+      if (leaf.view instanceof AgentWorkspaceView) {
+        leaf.view.updateContextBar();
+        leaf.view.renderSpeedControls();
+      }
     }
   }
 
