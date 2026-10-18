@@ -50,7 +50,9 @@ if (manifest.isDesktopOnly !== true) {
   fail("this Node.js subprocess plugin must remain desktop-only");
 }
 
-const requestedTag = process.argv[2] || process.env.GITHUB_REF_NAME || "";
+const requestedTag = process.argv[2]
+  || (process.env.GITHUB_REF_TYPE === "tag" ? process.env.GITHUB_REF_NAME : "")
+  || "";
 if (requestedTag && requestedTag !== manifest.version) {
   fail(`tag ${requestedTag} does not match manifest version ${manifest.version}`);
 }
