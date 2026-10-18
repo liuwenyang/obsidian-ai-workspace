@@ -68,18 +68,20 @@ assert.deepStrictEqual(
   "switching back to automatic must start a thread without the stale explicit model",
 );
 
+const vaultPath = path.resolve(__dirname, "fixtures", "vault");
+const imagePath = path.join(vaultPath, "image.png");
 const turnParams = buildCodexTurnStartParams({
   threadId: "thread-1",
   prompt: "分析图片",
-  imagePaths: ["C:/vault/image.png", "relative.png"],
+  imagePaths: [imagePath, "relative.png", "C:relative.png", "", null, 123],
   userMessageId: "message-1",
   settings: { allowEdits: false, models: { codex: "" } },
-  vaultPath: "C:/vault",
+  vaultPath,
 });
 assert.strictEqual(turnParams.threadId, "thread-1");
 assert.deepStrictEqual(turnParams.input, [
   { type: "text", text: "分析图片" },
-  { type: "localImage", path: "C:/vault/image.png" },
+  { type: "localImage", path: imagePath },
 ]);
 assert.deepStrictEqual(turnParams.sandboxPolicy, { type: "readOnly" });
 
