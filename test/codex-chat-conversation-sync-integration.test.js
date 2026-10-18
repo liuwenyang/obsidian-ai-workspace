@@ -16,10 +16,14 @@ const fakeObsidian = {
   MarkdownRenderer: { render: async () => {} },
   MarkdownView: class {},
   Modal: class {},
+  FuzzySuggestModal: class {},
+  TFile: class {},
+  TFolder: class {},
   Notice: class {},
   Plugin: FakePlugin,
   PluginSettingTab: class {},
   Setting: class {},
+  addIcon: () => {},
   setIcon: () => {},
 };
 

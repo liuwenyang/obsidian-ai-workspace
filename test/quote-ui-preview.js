@@ -36,8 +36,9 @@ function installHost() {
     MarkdownRenderer: { render: async (_app, text, body) => {
       text.split("\n\n").forEach((part) => body.createEl("p", { text: part }));
     } },
-    Plugin: class {}, PluginSettingTab: class {}, Modal: class {},
+    Plugin: class {}, PluginSettingTab: class {}, Modal: class {}, FuzzySuggestModal: class {}, TFile: class {}, TFolder: class {},
     Notice: class { constructor(text) { document.querySelector("#notice").textContent = text; } },
+    addIcon: () => {},
     setIcon: (element, name) => element.setText(({ "text-quote": "❞", x: "×", "arrow-up": "↑", "messages-square": "◇" })[name] || "·"),
   };
   window.require = (name) => name === "obsidian" ? host : {};

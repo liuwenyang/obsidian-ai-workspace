@@ -1,7 +1,7 @@
 {
   "id": "codex-chat",
   "name": "AI Workspace for Codex and Claude",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "minAppVersion": "1.7.2",
   "description": "Run Codex, Claude Code, and ReClaude conversations with streaming, approvals, images, branching, and synced history.",
   "author": "Silence",

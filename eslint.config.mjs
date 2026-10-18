@@ -25,8 +25,8 @@ export default defineConfig(
       "obsidianmd/ui/sentence-case": [
         "warn",
         {
-          brands: ["AI Workspace", "ChatGPT", "Claude", "Claude Code", "Codex", "Markdown", "Obsidian", "ReClaude", "WebP"],
-          acronyms: ["AI", "API", "GIF", "JPEG", "MCP", "PNG"],
+          brands: ["AI Workspace", "ChatGPT", "Claude", "Claude Code", "Codex", "Markdown", "Obsidian", "ReClaude", "Shift", "WebP"],
+          acronyms: ["AI", "API", "GIF", "JPEG", "MCP", "PNG", "YAML"],
           ignoreRegex: ["(?:^|\\s)(?:/|~/)"],
         },
       ],

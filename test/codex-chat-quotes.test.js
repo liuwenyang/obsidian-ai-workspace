@@ -7,8 +7,9 @@ const vm = require("node:vm");
 const notices = [];
 const obsidian = {
   ItemView: class {}, Plugin: class {}, PluginSettingTab: class {}, Modal: class {},
+  FuzzySuggestModal: class {}, TFile: class {}, TFolder: class {},
   Notice: class { constructor(text) { notices.push(text); } },
-  setIcon() {},
+  setIcon() {}, addIcon() {},
 };
 const sandbox = { module: { exports: {} }, require: (name) => name === "obsidian" ? obsidian : require(name) };
 vm.runInNewContext(`${fs.readFileSync(path.join(__dirname, "../main.js"), "utf8")}\nmodule.exports.View = AgentWorkspaceView;`, sandbox);

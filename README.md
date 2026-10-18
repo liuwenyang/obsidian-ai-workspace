@@ -15,6 +15,7 @@ This is an independent community project. It is not affiliated with or endorsed 
 - Reasoning, plan, command, tool, file-change, approval, and diff timeline cards
 - Cross-device conversation sync through Vault Markdown records
 - Read-only and workspace-write permission modes
+- Knowledge fusion: merge new conversation content into a note, turn exported chat logs into knowledge notes, or fuse several branches into one note, with a diff preview before anything is written
 
 ## Requirements
 
@@ -80,6 +81,20 @@ The composer displays a compact quote list with source labels, expandable previe
 
 Quotes are temporary draft state: switching provider/conversation, editing or forking a message, and closing the view clear the list. Validation failures before sending retain it. Highlights are optional presentation only; stored text snapshots stay intact if streaming or history refresh replaces the source DOM. Selection is confined to one message at a time to avoid collecting message controls or metadata.
 
+## Knowledge fusion
+
+Knowledge fusion turns conversations into note content without retyping:
+
+- The merge icon in the sidebar header (or the command **知识融合：把当前对话融合到笔记**) fuses the new messages of the current conversation into the inferred target note in one click; Shift+click opens the options (target note, new note, mode, extra instructions). The default target is the note the conversation was about, falling back to the active note.
+- **融合改写** integrates the new knowledge into the matching sections of the note; **追加小节** appends a dated section instead. Notes longer than 40k characters automatically use append mode.
+- Only messages that were not fused into that note before are sent; earlier turns are included as read-only context. A message shortened to fit the input limit stays eligible for a later fusion instead of being marked complete. Changed source notes are also eligible again. The **范围** control switches to the whole conversation or a custom range (pick start and end messages, or tick messages individually; Shift+click selects a run).
+- **多选** in the history modal fuses several conversations (or all branches of one root) into a single note.
+- Sources are a generic layer: the options panel lists every source and lets you add more (**添加会话…**, **添加笔记…**, **添加文件夹…**) or remove them, so daily exported chat logs from several days, several conversations and ordinary notes can be fused together into one note. The command **知识融合：从多个会话、笔记或文件夹融合…** starts with an empty list; right-clicking a folder offers the same for everything inside it.
+- The file menu (and the commands **知识融合：把当前笔记里的 AI 对话整理成知识笔记** / **知识融合：把侧栏当前对话融合到当前笔记**) either turns an exported chat log (`### 🧑 我` / `### 🤖 Codex` sections, frontmatter `type: ai-conversation`) into a structured knowledge note, or uses the clicked note as the target for the sidebar conversation. New knowledge notes get a small frontmatter block and a backlink in that day's `复盘.md` when the source was a daily export.
+- Every fusion runs as a separate read-only provider call (`codex exec --ephemeral` or `claude -p`, 10 minute timeout, cancellable), returns a full preview with a line diff, and is only written after you confirm. Frontmatter is never sent to the provider and is preserved verbatim, line endings are kept, and a note edited while the fusion ran is not overwritten.
+
+Knowledge fusion creates or edits knowledge notes; it is not a lossless transcript backup or an importer for `~/.claude/projects`. Keep original conversation archives when using it to summarize history. The separate **立即同步 AI Workspace 对话** command synchronizes this plugin's own conversations with `AI Workspace/Conversations/` without calling a model.
+
 ## Development
 
 ```powershell
@@ -105,6 +120,7 @@ codex-app-server-client.js      JSON-RPC process and protocol domain
 conversation-utils.js           Conversation, models, and branching domain
 attachment-utils.js             Image attachment domain
 conversation-sync-utils.js      Cross-device synchronization domain
+fusion-utils.js                 Knowledge fusion domain (prompt, parsing, diff, state)
 test/                           Dependency-free regression tests
 ```
 
